@@ -65,7 +65,13 @@ final class StatsStore {
     /// Date-stamped ring buffer of recent keystroke timestamps used to compute a
     /// live keys-per-minute figure over the last `speedWindow` seconds. This is
     /// in-memory only (not persisted) — it is a live gauge, not history.
-    private var recentKeystrokes: [Date] = []
+    ///
+    /// `@ObservationIgnored` is essential: the UI reads this (via `keysPerMinute()`)
+    /// inside a `TimelineView` body, and it is mutated as events arrive. If it were
+    /// observed, that read/mutate pair would invalidate the body that depends on it
+    /// and spin an infinite render loop, freezing the app. The `TimelineView`'s own
+    /// timer drives the live refresh, so observation here is neither needed nor safe.
+    @ObservationIgnored private var recentKeystrokes: [Date] = []
     private let speedWindow: TimeInterval = 60
 
     // MARK: Persistence
@@ -131,6 +137,11 @@ final class StatsStore {
     ///   - appName: frontmost app's localized name / bundle id (count only).
     func recordKeystroke(keyName: String, appName: String?) {
         keystrokeCount += 1
+
+        // Append now and prune anything older than the speed window so the buffer
+        // stays bounded. Pruning happens here (on write), never during the UI read.
+        let cutoff = Date().addingTimeInterval(-speedWindow)
+        recentKeystrokes.removeAll { $0 < cutoff }
         recentKeystrokes.append(Date())
 
         mutateToday { today in
@@ -198,13 +209,17 @@ final class StatsStore {
             .map { (name: $0.key, count: $0.value) }
     }
 
-    /// Live keystrokes-per-minute over the trailing `speedWindow`. Prunes the
-    /// ring buffer as a side effect so it stays small.
+    /// Live keystrokes-per-minute over the trailing `speedWindow`. Pure read: it
+    /// counts (without mutating) the timestamps still inside the window, so it is
+    /// safe to call from a SwiftUI view body. The buffer is pruned on write in
+    /// `recordKeystroke`.
     func keysPerMinute() -> Int {
         let cutoff = Date().addingTimeInterval(-speedWindow)
-        recentKeystrokes.removeAll { $0 < cutoff }
+        let countInWindow = recentKeystrokes.reduce(into: 0) { total, date in
+            if date >= cutoff { total += 1 }
+        }
         // Scale the count in the window up to a per-minute rate.
-        let perSecond = Double(recentKeystrokes.count) / speedWindow
+        let perSecond = Double(countInWindow) / speedWindow
         return Int((perSecond * 60).rounded())
     }
 

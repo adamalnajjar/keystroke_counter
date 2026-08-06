@@ -155,31 +155,48 @@ struct ContentView: View {
     }
 
     private var goalSection: some View {
-        HStack {
-            Image(systemName: "target").frame(width: 20)
-            Text("Daily goal")
-            Spacer()
-            if store.dailyGoal > 0 {
-                Text(CountFormatter.grouped(store.dailyGoal)).monospacedDigit()
-            } else {
-                Text("off").foregroundStyle(.secondary)
+        // Edited inline rather than via a system `.alert`: an alert with a
+        // TextField presented from a MenuBarExtra(.window) panel is torn down the
+        // moment the field takes focus (the panel resigns key), so it errors out.
+        // An inline editor keeps stable view identity and holds focus.
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Image(systemName: "target").frame(width: 20)
+                Text("Daily goal")
+                Spacer()
+                if store.dailyGoal > 0 {
+                    Text(CountFormatter.grouped(store.dailyGoal)).monospacedDigit()
+                } else {
+                    Text("off").foregroundStyle(.secondary)
+                }
+                Button(showGoalEditor ? "Done" : "Set") {
+                    if !showGoalEditor {
+                        goalText = store.dailyGoal > 0 ? "\(store.dailyGoal)" : ""
+                    }
+                    showGoalEditor.toggle()
+                }
+                .controlSize(.small)
             }
-            Button("Set") {
-                goalText = store.dailyGoal > 0 ? "\(store.dailyGoal)" : ""
-                showGoalEditor = true
+            .font(.callout)
+
+            if showGoalEditor {
+                HStack {
+                    TextField("Events per day (0 to disable)", text: $goalText)
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit { saveGoal() }
+                    Button("Save") { saveGoal() }
+                        .controlSize(.small)
+                }
+                Text("Get a notification when you reach this many keystrokes + clicks in a day.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
             }
-            .controlSize(.small)
         }
-        .font(.callout)
-        .alert("Daily goal", isPresented: $showGoalEditor) {
-            TextField("Events per day (0 to disable)", text: $goalText)
-            Button("Save") {
-                store.dailyGoal = max(0, Int(goalText) ?? 0)
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Get a notification when you reach this many keystrokes + clicks in a day.")
-        }
+    }
+
+    private func saveGoal() {
+        store.dailyGoal = max(0, Int(goalText) ?? 0)
+        showGoalEditor = false
     }
 
     private var privacyFooter: some View {
