@@ -57,8 +57,20 @@ final class StatsStore {
 
     /// User-configurable daily combined-event goal (0 = disabled).
     var dailyGoal: Int {
-        didSet { persist() }
+        didSet {
+            // Any change through the panel is an explicit choice — even setting
+            // it to 0 (off) — so it must survive relaunch and never be replaced
+            // by the fresh-install default. (didSet does not fire for the initial
+            // assignment in `init`, so loading a value here doesn't set this.)
+            hasSetGoal = true
+            persist()
+        }
     }
+
+    /// Whether the user has ever explicitly chosen a goal. Distinguishes a
+    /// deliberate "off" (0) from a never-configured install, so the fresh-install
+    /// default only applies until the user makes a choice. Not UI-observed.
+    @ObservationIgnored private var hasSetGoal: Bool
 
     // MARK: Live typing speed (rolling window)
 
@@ -86,6 +98,9 @@ final class StatsStore {
         var days: [DailyStats]
         var reachedMilestones: [Int]
         var dailyGoal: Int
+        /// Optional so snapshots written before this flag existed decode as nil
+        /// (treated as "never configured" → adopt the fresh-install default).
+        var hasSetGoal: Bool?
     }
 
     // MARK: Init / load
@@ -109,7 +124,11 @@ final class StatsStore {
         var loadedSince = Date()
         var loadedDays: [Date: DailyStats] = [:]
         var loadedMilestones: Set<Int> = []
-        var loadedGoal = 0
+        // Fresh installs (and installs predating the goal flag) start with an
+        // active daily goal of 25k combined events — a solid "active day" for a
+        // heavy keyboard user. Once the user picks a goal it takes over.
+        var loadedGoal = 25_000
+        var loadedHasSetGoal = false
 
         if let data = try? Data(contentsOf: fileURL),
            let snapshot = try? JSONDecoder.iso.decode(Persisted.self, from: data) {
@@ -118,7 +137,12 @@ final class StatsStore {
             loadedSince = snapshot.since
             loadedDays = Dictionary(uniqueKeysWithValues: snapshot.days.map { ($0.day, $0) })
             loadedMilestones = Set(snapshot.reachedMilestones)
-            loadedGoal = snapshot.dailyGoal
+            // Only honor the persisted goal if it was an explicit choice;
+            // otherwise keep the fresh-install default above.
+            if snapshot.hasSetGoal == true {
+                loadedGoal = snapshot.dailyGoal
+                loadedHasSetGoal = true
+            }
         }
 
         self.keystrokeCount = loadedKeystrokes
@@ -126,6 +150,7 @@ final class StatsStore {
         self.since = loadedSince
         self.days = loadedDays
         self.reachedMilestones = loadedMilestones
+        self.hasSetGoal = loadedHasSetGoal
         self.dailyGoal = loadedGoal
     }
 
@@ -273,7 +298,8 @@ final class StatsStore {
             since: since,
             days: Array(days.values),
             reachedMilestones: Array(reachedMilestones),
-            dailyGoal: dailyGoal
+            dailyGoal: dailyGoal,
+            hasSetGoal: hasSetGoal
         )
         guard let data = try? JSONEncoder.iso.encode(snapshot) else { return }
         try? data.write(to: fileURL, options: .atomic)

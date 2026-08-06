@@ -25,23 +25,16 @@ struct keystroke_counterApp: App {
     }
 }
 
-/// Compact menu bar label showing keystrokes and clicks side by side.
+/// Compact menu bar label showing keystrokes and clicks as `keys | clicks`.
 ///
 /// NOTE on rendering constraints: `MenuBarExtra` renders its label into the
-/// system status bar, which restricts custom views (it effectively wants a
-/// template image + text). A stacked two-line SwiftUI view does NOT render
-/// reliably there. The reliable approach — used here — is a single-line
-/// `Label`-free HStack of small SF Symbols and abbreviated numbers, which the
-/// status bar renders as expected. Values use `CountFormatter.abbreviated`.
+/// system status bar, which restricts custom views. A single `Text` renders
+/// reliably there, so we compose both abbreviated counts into one string
+/// separated by a pipe (e.g. `703 | 77`). Values use `CountFormatter.abbreviated`.
 struct MenuBarLabel: View {
     let store: StatsStore
 
     var body: some View {
-        HStack(spacing: 4) {
-            Image(systemName: "keyboard")
-            Text(CountFormatter.abbreviated(store.keystrokeCount))
-            Image(systemName: "cursorarrow.click")
-            Text(CountFormatter.abbreviated(store.clickCount))
-        }
+        Text("\(CountFormatter.abbreviated(store.keystrokeCount)) | \(CountFormatter.abbreviated(store.clickCount))")
     }
 }
