@@ -13,12 +13,13 @@ struct ContentView: View {
     let monitor: EventMonitor
 
     /// Which time scope the headline totals summarise. Persisted across launches.
-    @AppStorage("statsScope") private var scope: StatsScope = .lifetime
+    @AppStorage("statsScope") private var scope: StatsScope = .today
 
     /// Expansion state for the collapsible stat sections. Persisted across launches.
     @AppStorage("showHistory") private var showHistory = true
     @AppStorage("showKeys") private var showKeys = true
     @AppStorage("showApps") private var showApps = true
+    @AppStorage("showSettings") private var showSettings = false
 
     /// Launch-at-login toggle, backed by SMAppService.
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
@@ -35,6 +36,13 @@ struct ContentView: View {
             }
 
             totals
+
+            // Goal progress is a "today" concept: only shown on the Today tab
+            // when a goal is set.
+            if scope == .today, store.dailyGoal > 0 {
+                goalProgress
+            }
+
             liveSpeed
 
             Divider()
@@ -43,17 +51,19 @@ struct ContentView: View {
             }
 
             Divider()
-            CollapsibleSection(title: "Most-used keys today", isExpanded: $showKeys) {
+            CollapsibleSection(title: "Most-used keys \(scopeSuffix)", isExpanded: $showKeys) {
                 topKeysContent
             }
 
             Divider()
-            CollapsibleSection(title: "Top apps today", isExpanded: $showApps) {
+            CollapsibleSection(title: "Top apps \(scopeSuffix)", isExpanded: $showApps) {
                 topAppsContent
             }
 
             Divider()
-            goalSection
+            CollapsibleSection(title: "Settings", isExpanded: $showSettings) {
+                goalSection
+            }
 
             Divider()
             privacyFooter
@@ -96,9 +106,82 @@ struct ContentView: View {
         return VStack(alignment: .leading, spacing: 6) {
             statRow(symbol: "keyboard", label: "Keystrokes", value: counts.keystrokes)
             statRow(symbol: "cursorarrow.click", label: "Clicks", value: counts.clicks)
+            // The record to beat — best previous period of this kind. Not shown
+            // for Lifetime (no repeating period to compare against).
+            if scope != .lifetime {
+                recordRow
+            }
             Text(totalsCaption)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
+        }
+    }
+
+    /// Today's progress toward the daily goal: a bar with "X / goal · N%" that
+    /// turns green with a checkmark once the goal is reached.
+    private var goalProgress: some View {
+        let reached = store.isDailyGoalReached
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Image(systemName: reached ? "checkmark.circle.fill" : "target")
+                    .foregroundStyle(reached ? Color.green : Color.secondary)
+                Text(reached ? "Goal reached!" : "Daily goal")
+                    .font(.caption).bold()
+                    .foregroundStyle(reached ? Color.green : Color.primary)
+                Spacer()
+                Text("\(CountFormatter.grouped(store.combinedToday)) / \(CountFormatter.grouped(store.dailyGoal)) · \(Int(store.goalFraction * 100))%")
+                    .font(.caption2)
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+            }
+            ProgressView(value: store.goalFraction)
+                .tint(reached ? Color.green : Color.accentColor)
+        }
+    }
+
+    /// Row showing the combined-events record for a previous period, with an
+    /// info icon whose hover tooltip explains what the record is.
+    private var recordRow: some View {
+        let record = store.record(for: scope)
+        return HStack {
+            Image(systemName: "trophy").frame(width: 20)
+            Text("Record")
+            Spacer()
+            if let record {
+                Text(CountFormatter.grouped(record.combined))
+                    .monospacedDigit()
+                    .bold()
+            } else {
+                Text("—").foregroundStyle(.secondary)
+            }
+            Image(systemName: "info.circle")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .help(recordTooltip(record))
+        }
+    }
+
+    /// Hover tooltip text describing the record (keystrokes + clicks combined).
+    private func recordTooltip(_ record: (combined: Int, periodStart: Date)?) -> String {
+        guard let record else {
+            switch scope {
+            case .today: return "Your record to beat — set once you've had a full previous day of activity."
+            case .week: return "Your record to beat — set once your first full week completes."
+            case .month: return "Your record to beat — set once your first full month completes."
+            case .lifetime: return ""
+            }
+        }
+        let count = CountFormatter.grouped(record.combined)
+        let date = record.periodStart
+        switch scope {
+        case .today:
+            return "Best day so far: \(count) keystrokes + clicks on \(date.formatted(date: .abbreviated, time: .omitted))."
+        case .week:
+            return "Best week so far: \(count) keystrokes + clicks (week of \(date.formatted(date: .abbreviated, time: .omitted)))."
+        case .month:
+            return "Best month so far: \(count) keystrokes + clicks in \(date.formatted(.dateTime.month(.wide).year()))."
+        case .lifetime:
+            return ""
         }
     }
 
@@ -107,6 +190,8 @@ struct ContentView: View {
         switch scope {
         case .lifetime:
             return "since \(store.since.formatted(date: .abbreviated, time: .shortened))"
+        case .today:
+            return "today"
         case .month:
             return Date().formatted(.dateTime.month(.wide).year())
         case .week:
@@ -142,11 +227,21 @@ struct ContentView: View {
         }
     }
 
+    /// Suffix describing the active scope, used in section titles / empty states.
+    private var scopeSuffix: String {
+        switch scope {
+        case .today: return "today"
+        case .week: return "this week"
+        case .month: return "this month"
+        case .lifetime: return "all-time"
+        }
+    }
+
     private var topKeysContent: some View {
         VStack(alignment: .leading, spacing: 4) {
-            let keys = store.topKeys()
+            let keys = store.topKeys(for: scope)
             if keys.isEmpty {
-                Text("No keys yet today").font(.caption2).foregroundStyle(.secondary)
+                Text("No keys recorded \(scopeSuffix)").font(.caption2).foregroundStyle(.secondary)
             } else {
                 ForEach(keys, id: \.name) { entry in
                     HStack {
@@ -162,9 +257,9 @@ struct ContentView: View {
 
     private var topAppsContent: some View {
         VStack(alignment: .leading, spacing: 4) {
-            let apps = store.topApps()
+            let apps = store.topApps(for: scope)
             if apps.isEmpty {
-                Text("No activity yet today").font(.caption2).foregroundStyle(.secondary)
+                Text("No activity recorded \(scopeSuffix)").font(.caption2).foregroundStyle(.secondary)
             } else {
                 ForEach(apps, id: \.name) { entry in
                     HStack {

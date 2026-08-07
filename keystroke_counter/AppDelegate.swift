@@ -19,10 +19,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Raw event source that feeds `store`.
     lazy var monitor = EventMonitor(store: store)
 
-    /// The day (start-of-day) whose goal notification we've already fired, so we
-    /// only alert once per day for the configurable daily goal.
-    private var goalFiredForDay: Date?
-
     func applicationDidFinishLaunching(_ notification: Notification) {
         // No Dock icon: this is a menu-bar-only ("agent") app. Done in code so we
         // don't rely on an Info.plist LSUIElement key.
@@ -51,14 +47,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NotificationManager.shared.fireMilestone(milestone)
         }
 
-        // Configurable daily goal: fire at most once per calendar day.
-        let goal = store.dailyGoal
-        guard goal > 0 else { return }
-        let combinedToday = store.today.keystrokes + store.today.clicks
-        let todayStart = StatsStore.startOfDay(Date())
-        if combinedToday >= goal, goalFiredForDay != todayStart {
-            goalFiredForDay = todayStart
-            NotificationManager.shared.fireDailyGoal(goal)
+        // Configurable daily goal: fire at most once per calendar day (the
+        // once-per-day bookkeeping is persisted in the store, so relaunching
+        // after hitting the goal won't re-fire the notification).
+        if store.isDailyGoalReachedUnnotified {
+            store.markDailyGoalNotified()
+            NotificationManager.shared.fireDailyGoal(store.dailyGoal)
         }
     }
 }
