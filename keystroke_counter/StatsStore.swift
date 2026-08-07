@@ -116,6 +116,13 @@ final class StatsStore {
 
     private let fileURL: URL
 
+    /// Pending debounced save. A burst of events reschedules this so we write
+    /// once after the burst instead of once per event. Not UI-observed.
+    @ObservationIgnored private var pendingSave: Task<Void, Never>?
+
+    /// How long to wait after the last change before writing to disk.
+    private let saveDebounce: Duration = .seconds(2)
+
     /// On-disk snapshot shape. Bumping nothing fancy — a plain container.
     private struct Persisted: Codable {
         var keystrokeCount: Int
@@ -431,7 +438,29 @@ final class StatsStore {
         days[key] = bucket
     }
 
+    /// Debounced save: coalesce a burst of events into a single disk write a
+    /// short while after the last change, instead of re-encoding and rewriting
+    /// the whole history on every keystroke. In-memory state is already current,
+    /// so the UI stays live; only the file lags by up to `saveDebounce`.
     private func persist() {
+        pendingSave?.cancel()
+        pendingSave = Task { @MainActor [weak self] in
+            guard let self else { return }
+            try? await Task.sleep(for: self.saveDebounce)
+            guard !Task.isCancelled else { return }
+            self.writeNow()
+        }
+    }
+
+    /// Write current state to disk immediately, cancelling any pending debounced
+    /// save. Call on quit so an in-flight save is never lost.
+    func flush() {
+        pendingSave?.cancel()
+        pendingSave = nil
+        writeNow()
+    }
+
+    private func writeNow() {
         let snapshot = Persisted(
             keystrokeCount: keystrokeCount,
             clickCount: clickCount,

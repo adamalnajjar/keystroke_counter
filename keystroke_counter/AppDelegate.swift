@@ -39,6 +39,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         monitor.stop()
+        // Write any debounced-but-unsaved counts before we exit.
+        store.flush()
     }
 
     /// Fire any newly-crossed milestone notifications and the daily-goal alert.
