@@ -25,7 +25,8 @@ struct keystroke_counterApp: App {
     }
 }
 
-/// Compact menu bar label showing keystrokes and clicks as `keys | clicks`.
+/// Compact menu bar label showing TODAY's keystrokes and clicks as
+/// `keys | clicks`.
 ///
 /// NOTE on rendering constraints: `MenuBarExtra` renders its label into the
 /// system status bar, which restricts custom views. A single `Text` renders
@@ -35,6 +36,6 @@ struct MenuBarLabel: View {
     let store: StatsStore
 
     var body: some View {
-        Text("\(CountFormatter.abbreviated(store.keystrokeCount)) | \(CountFormatter.abbreviated(store.clickCount))")
+        Text("\(CountFormatter.abbreviated(store.today.keystrokes)) | \(CountFormatter.abbreviated(store.today.clicks))")
     }
 }
