@@ -14,6 +14,15 @@
 import Foundation
 import Observation
 
+/// Time scope for the headline keystroke/click totals shown at the top of the panel.
+enum StatsScope: String, CaseIterable, Identifiable {
+    case lifetime = "Lifetime"
+    case month = "This Month"
+    case week = "This Week"
+
+    var id: String { rawValue }
+}
+
 /// One day's worth of aggregate statistics. `Codable` so we can persist the
 /// whole history as JSON.
 struct DailyStats: Codable, Identifiable {
@@ -205,6 +214,31 @@ final class StatsStore {
     /// Today's bucket (empty if nothing recorded yet today).
     var today: DailyStats {
         days[Self.startOfDay(Date())] ?? DailyStats(day: Self.startOfDay(Date()))
+    }
+
+    /// Headline keystroke/click totals for the given scope. `lifetime` uses the
+    /// all-time counters; `month`/`week` sum the per-day buckets that fall in the
+    /// current calendar month / week.
+    func totals(for scope: StatsScope) -> (keystrokes: Int, clicks: Int) {
+        switch scope {
+        case .lifetime:
+            return (keystrokeCount, clickCount)
+        case .month:
+            return sumDays { Calendar.current.isDate($0, equalTo: Date(), toGranularity: .month) }
+        case .week:
+            return sumDays { Calendar.current.isDate($0, equalTo: Date(), toGranularity: .weekOfYear) }
+        }
+    }
+
+    /// Sum keystrokes and clicks across the day buckets matching `include`.
+    private func sumDays(where include: (Date) -> Bool) -> (keystrokes: Int, clicks: Int) {
+        var keystrokes = 0
+        var clicks = 0
+        for (day, stats) in days where include(day) {
+            keystrokes += stats.keystrokes
+            clicks += stats.clicks
+        }
+        return (keystrokes, clicks)
     }
 
     /// The most recent `count` days including today, oldest first. Missing days

@@ -12,6 +12,14 @@ struct ContentView: View {
     let store: StatsStore
     let monitor: EventMonitor
 
+    /// Which time scope the headline totals summarise. Persisted across launches.
+    @AppStorage("statsScope") private var scope: StatsScope = .lifetime
+
+    /// Expansion state for the collapsible stat sections. Persisted across launches.
+    @AppStorage("showHistory") private var showHistory = true
+    @AppStorage("showKeys") private var showKeys = true
+    @AppStorage("showApps") private var showApps = true
+
     /// Launch-at-login toggle, backed by SMAppService.
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @State private var showResetConfirm = false
@@ -20,7 +28,7 @@ struct ContentView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            header
+            scopePicker
 
             if !monitor.isTrusted {
                 permissionBanner
@@ -30,13 +38,19 @@ struct ContentView: View {
             liveSpeed
 
             Divider()
-            StatsChartView(store: store)
+            CollapsibleSection(title: "History", isExpanded: $showHistory) {
+                StatsChartView(store: store)
+            }
 
             Divider()
-            topKeysSection
+            CollapsibleSection(title: "Most-used keys today", isExpanded: $showKeys) {
+                topKeysContent
+            }
 
             Divider()
-            topAppsSection
+            CollapsibleSection(title: "Top apps today", isExpanded: $showApps) {
+                topAppsContent
+            }
 
             Divider()
             goalSection
@@ -52,13 +66,14 @@ struct ContentView: View {
 
     // MARK: Sections
 
-    private var header: some View {
-        HStack {
-            Image(systemName: "keyboard")
-            Text("Keystroke Counter")
-                .font(.headline)
-            Spacer()
+    private var scopePicker: some View {
+        Picker("Scope", selection: $scope) {
+            ForEach(StatsScope.allCases) { scope in
+                Text(scope.rawValue).tag(scope)
+            }
         }
+        .pickerStyle(.segmented)
+        .labelsHidden()
     }
 
     private var permissionBanner: some View {
@@ -77,12 +92,25 @@ struct ContentView: View {
     }
 
     private var totals: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            statRow(symbol: "keyboard", label: "Keystrokes", value: store.keystrokeCount)
-            statRow(symbol: "cursorarrow.click", label: "Clicks", value: store.clickCount)
-            Text("since \(store.since.formatted(date: .abbreviated, time: .shortened))")
+        let counts = store.totals(for: scope)
+        return VStack(alignment: .leading, spacing: 6) {
+            statRow(symbol: "keyboard", label: "Keystrokes", value: counts.keystrokes)
+            statRow(symbol: "cursorarrow.click", label: "Clicks", value: counts.clicks)
+            Text(totalsCaption)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
+        }
+    }
+
+    /// Sub-caption under the totals describing the active scope's period.
+    private var totalsCaption: String {
+        switch scope {
+        case .lifetime:
+            return "since \(store.since.formatted(date: .abbreviated, time: .shortened))"
+        case .month:
+            return Date().formatted(.dateTime.month(.wide).year())
+        case .week:
+            return "this week"
         }
     }
 
@@ -114,10 +142,8 @@ struct ContentView: View {
         }
     }
 
-    private var topKeysSection: some View {
+    private var topKeysContent: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("Most-used keys today")
-                .font(.caption).foregroundStyle(.secondary)
             let keys = store.topKeys()
             if keys.isEmpty {
                 Text("No keys yet today").font(.caption2).foregroundStyle(.secondary)
@@ -134,10 +160,8 @@ struct ContentView: View {
         }
     }
 
-    private var topAppsSection: some View {
+    private var topAppsContent: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("Top apps today")
-                .font(.caption).foregroundStyle(.secondary)
             let apps = store.topApps()
             if apps.isEmpty {
                 Text("No activity yet today").font(.caption2).foregroundStyle(.secondary)
@@ -206,6 +230,10 @@ struct ContentView: View {
             Text("Counts only — never what you type. All data stays on this Mac; no network access.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
+                .multilineTextAlignment(.leading)
+                // Let the text wrap to as many lines as it needs instead of
+                // truncating to one line with an ellipsis.
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -234,6 +262,39 @@ struct ContentView: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("This zeroes your all-time keystroke and click totals and the 'since' date. Your daily history charts are kept.")
+        }
+    }
+}
+
+/// A titled section whose body can be collapsed by clicking its header. Used to
+/// let the panel's stat sections be minimised individually.
+struct CollapsibleSection<Content: View>: View {
+    let title: String
+    @Binding var isExpanded: Bool
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.15)) { isExpanded.toggle() }
+            } label: {
+                HStack {
+                    Text(title)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if isExpanded {
+                content()
+            }
         }
     }
 }

@@ -42,9 +42,7 @@ struct StatsChartView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text("History")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                // Title is provided by the enclosing collapsible section.
                 Spacer()
                 Picker("Range", selection: $range) {
                     ForEach(ChartRange.allCases) { r in
