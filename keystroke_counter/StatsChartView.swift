@@ -24,10 +24,13 @@ struct StatsChartView: View {
 
     /// Flattened (day, metric, value) rows for a grouped/stacked bar chart.
     private struct Point: Identifiable {
-        let id = UUID()
         let day: Date
         let metric: String
         let value: Int
+
+        var id: String {
+            "\(day.timeIntervalSinceReferenceDate)-\(metric)"
+        }
     }
 
     private var points: [Point] {

@@ -24,12 +24,11 @@ final class EventMonitor {
     /// a closure so EventMonitor stays UI-agnostic.
     var onEventRecorded: (() -> Void)?
 
-    // Global monitors fire for events delivered to OTHER apps; local monitors
-    // fire for events delivered to THIS app (so our own clicks count too).
+    // Global monitors fire for events delivered to OTHER apps. We deliberately
+    // avoid local monitors for this app so using the menu panel does not record
+    // its own clicks/keystrokes and redraw itself during interaction.
     private var globalKeyMonitor: Any?
-    private var localKeyMonitor: Any?
     private var globalMouseMonitor: Any?
-    private var localMouseMonitor: Any?
 
     init(store: StatsStore) {
         self.store = store
@@ -63,30 +62,19 @@ final class EventMonitor {
         globalKeyMonitor = NSEvent.addGlobalMonitorForEvents(matching: keyMask) { [weak self] event in
             self?.handleKey(event)
         }
-        // Local monitor must return the event so normal handling continues.
-        localKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: keyMask) { [weak self] event in
-            self?.handleKey(event)
-            return event
-        }
 
         globalMouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: mouseMask) { [weak self] event in
             self?.handleMouse(event)
-        }
-        localMouseMonitor = NSEvent.addLocalMonitorForEvents(matching: mouseMask) { [weak self] event in
-            self?.handleMouse(event)
-            return event
         }
     }
 
     /// Stop watching and remove all monitors.
     func stop() {
-        for monitor in [globalKeyMonitor, localKeyMonitor, globalMouseMonitor, localMouseMonitor] {
+        for monitor in [globalKeyMonitor, globalMouseMonitor] {
             if let monitor { NSEvent.removeMonitor(monitor) }
         }
         globalKeyMonitor = nil
-        localKeyMonitor = nil
         globalMouseMonitor = nil
-        localMouseMonitor = nil
     }
 
     // MARK: Event handling

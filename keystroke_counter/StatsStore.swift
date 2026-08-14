@@ -63,19 +63,19 @@ final class StatsStore {
     // MARK: All-time totals (preserve the original app's semantics)
 
     /// All-time keystroke total. Survives relaunch; zeroed by `reset()`.
-    private(set) var keystrokeCount: Int
+    @ObservationIgnored private(set) var keystrokeCount: Int
     /// All-time click total. Survives relaunch; zeroed by `reset()`.
-    private(set) var clickCount: Int
+    @ObservationIgnored private(set) var clickCount: Int
 
     /// Timestamp of the last reset (or first launch). Shown as "since <date>".
-    private(set) var since: Date
+    @ObservationIgnored private(set) var since: Date
 
     /// Per-day history, keyed by start-of-day date. Persisted.
-    private(set) var days: [Date: DailyStats]
+    @ObservationIgnored private(set) var days: [Date: DailyStats]
 
     /// Combined-event milestones already reached, so we never re-fire a
     /// notification for the same milestone.
-    private(set) var reachedMilestones: Set<Int>
+    @ObservationIgnored private(set) var reachedMilestones: Set<Int>
 
     /// User-configurable daily combined-event goal (0 = disabled).
     var dailyGoal: Int {
@@ -96,7 +96,15 @@ final class StatsStore {
 
     /// Start-of-day for which we've already posted the daily-goal notification,
     /// so it fires at most once per day even across relaunches. Persisted.
-    private(set) var goalNotifiedDay: Date?
+    @ObservationIgnored private(set) var goalNotifiedDay: Date?
+
+    /// Lightweight invalidation token for the UI. The hot counters above are
+    /// intentionally ignored by Observation so every key press does not redraw
+    /// the menu bar and panel. Derived read APIs touch this token, and event
+    /// recording bumps it on a short throttle.
+    private(set) var displayRevision = 0
+    @ObservationIgnored private var pendingDisplayRefresh: Task<Void, Never>?
+    private let displayRefreshInterval: Duration = .seconds(1)
 
     // MARK: Live typing speed (rolling window)
 
@@ -116,12 +124,16 @@ final class StatsStore {
 
     private let fileURL: URL
 
-    /// Pending debounced save. A burst of events reschedules this so we write
-    /// once after the burst instead of once per event. Not UI-observed.
+    /// Pending coalesced save. The first change schedules one write after a
+    /// short delay; further events reuse the same task instead of cancelling and
+    /// recreating work on every keystroke. Not UI-observed.
     @ObservationIgnored private var pendingSave: Task<Void, Never>?
 
-    /// How long to wait after the last change before writing to disk.
-    private let saveDebounce: Duration = .seconds(2)
+    /// Whether state has changed since the last completed write.
+    @ObservationIgnored private var needsSave = false
+
+    /// How long to coalesce writes before touching disk.
+    private let saveDelay: Duration = .seconds(5)
 
     /// On-disk snapshot shape. Bumping nothing fancy — a plain container.
     private struct Persisted: Codable {
@@ -212,6 +224,7 @@ final class StatsStore {
             today.keyFrequency[keyName, default: 0] += 1
             if let appName { today.appFrequency[appName, default: 0] += 1 }
         }
+        scheduleDisplayRefresh()
         persist()
     }
 
@@ -222,6 +235,7 @@ final class StatsStore {
             today.clicks += 1
             if let appName { today.appFrequency[appName, default: 0] += 1 }
         }
+        scheduleDisplayRefresh()
         persist()
     }
 
@@ -235,6 +249,7 @@ final class StatsStore {
         since = Date()
         reachedMilestones = []
         recentKeystrokes = []
+        displayRevision &+= 1
         persist()
     }
 
@@ -242,13 +257,15 @@ final class StatsStore {
 
     /// Today's bucket (empty if nothing recorded yet today).
     var today: DailyStats {
-        days[Self.startOfDay(Date())] ?? DailyStats(day: Self.startOfDay(Date()))
+        _ = displayRevision
+        return days[Self.startOfDay(Date())] ?? DailyStats(day: Self.startOfDay(Date()))
     }
 
     /// Headline keystroke/click totals for the given scope. `lifetime` uses the
     /// all-time counters; `month`/`week` sum the per-day buckets that fall in the
     /// current calendar month / week.
     func totals(for scope: StatsScope) -> (keystrokes: Int, clicks: Int) {
+        _ = displayRevision
         switch scope {
         case .lifetime:
             return (keystrokeCount, clickCount)
@@ -277,6 +294,7 @@ final class StatsStore {
     /// that period (for a tooltip). Returns nil for `.lifetime`, or when no prior
     /// period has any recorded activity.
     func record(for scope: StatsScope) -> (combined: Int, periodStart: Date)? {
+        _ = displayRevision
         guard let component = scope.periodComponent else { return nil }
 
         let cal = Calendar.current
@@ -301,6 +319,7 @@ final class StatsStore {
     /// The most recent `count` days including today, oldest first. Missing days
     /// are filled with zeroes so charts have a continuous axis.
     func series(days count: Int) -> [DailyStats] {
+        _ = displayRevision
         let cal = Calendar.current
         let todayStart = Self.startOfDay(Date())
         return (0..<count).reversed().compactMap { offset -> DailyStats? in
@@ -311,12 +330,14 @@ final class StatsStore {
 
     /// Top keys (frequency only) over the given scope, highest first.
     func topKeys(for scope: StatsScope, limit: Int = 10) -> [(name: String, count: Int)] {
-        topEntries(\.keyFrequency, in: scope, limit: limit)
+        _ = displayRevision
+        return topEntries(\.keyFrequency, in: scope, limit: limit)
     }
 
     /// Top apps by event count over the given scope, highest first.
     func topApps(for scope: StatsScope, limit: Int = 10) -> [(name: String, count: Int)] {
-        topEntries(\.appFrequency, in: scope, limit: limit)
+        _ = displayRevision
+        return topEntries(\.appFrequency, in: scope, limit: limit)
     }
 
     /// Merge a per-day frequency dictionary across the day buckets in `scope`,
@@ -356,6 +377,7 @@ final class StatsStore {
     /// safe to call from a SwiftUI view body. The buffer is pruned on write in
     /// `recordKeystroke`.
     func keysPerMinute() -> Int {
+        _ = displayRevision
         let cutoff = Date().addingTimeInterval(-speedWindow)
         let countInWindow = recentKeystrokes.reduce(into: 0) { total, date in
             if date >= cutoff { total += 1 }
@@ -425,6 +447,7 @@ final class StatsStore {
     /// Record that today's goal notification has fired (persisted).
     func markDailyGoalNotified() {
         goalNotifiedDay = Self.startOfDay(Date())
+        displayRevision &+= 1
         persist()
     }
 
@@ -441,14 +464,28 @@ final class StatsStore {
     /// Debounced save: coalesce a burst of events into a single disk write a
     /// short while after the last change, instead of re-encoding and rewriting
     /// the whole history on every keystroke. In-memory state is already current,
-    /// so the UI stays live; only the file lags by up to `saveDebounce`.
+    /// so the UI stays live; only the file lags by up to `saveDelay`.
     private func persist() {
-        pendingSave?.cancel()
+        needsSave = true
+        guard pendingSave == nil else { return }
         pendingSave = Task { @MainActor [weak self] in
             guard let self else { return }
-            try? await Task.sleep(for: self.saveDebounce)
+            try? await Task.sleep(for: self.saveDelay)
             guard !Task.isCancelled else { return }
+            self.needsSave = false
             self.writeNow()
+            self.pendingSave = nil
+        }
+    }
+
+    private func scheduleDisplayRefresh() {
+        guard pendingDisplayRefresh == nil else { return }
+        pendingDisplayRefresh = Task { @MainActor [weak self] in
+            guard let self else { return }
+            try? await Task.sleep(for: self.displayRefreshInterval)
+            guard !Task.isCancelled else { return }
+            self.displayRevision &+= 1
+            self.pendingDisplayRefresh = nil
         }
     }
 
@@ -457,7 +494,13 @@ final class StatsStore {
     func flush() {
         pendingSave?.cancel()
         pendingSave = nil
-        writeNow()
+        pendingDisplayRefresh?.cancel()
+        pendingDisplayRefresh = nil
+        displayRevision &+= 1
+        if needsSave {
+            needsSave = false
+            writeNow()
+        }
     }
 
     private func writeNow() {
