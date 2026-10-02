@@ -1,0 +1,7 @@
+DerivedData/
+firebase-debug.log
+*.xcodeproj/xcuserdata/*/xcdebugger/
+.claude/worktrees/
+server/.env
+server/data/
+__pycache__/
