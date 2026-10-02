@@ -30,6 +30,19 @@ enum StatsScope: String, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
+    /// Tab label. Kept short so the four-segment picker always fits the panel:
+    /// with the longer raw values it could overflow after a selection change,
+    /// widening the whole column and shifting the panel's content sideways.
+    /// (The raw values stay as-is because they're persisted via @AppStorage.)
+    var tabTitle: String {
+        switch self {
+        case .today: return "Today"
+        case .week: return "Week"
+        case .month: return "Month"
+        case .lifetime: return "Lifetime"
+        }
+    }
+
     /// The calendar component that defines one period of this scope (nil for
     /// lifetime, which has no repeating period).
     var periodComponent: Calendar.Component? {

@@ -83,7 +83,7 @@ struct ContentView: View {
     private var scopePicker: some View {
         Picker("Scope", selection: $scope) {
             ForEach(StatsScope.allCases) { scope in
-                Text(scope.rawValue).tag(scope)
+                Text(scope.tabTitle).tag(scope)
             }
         }
         .pickerStyle(.segmented)
