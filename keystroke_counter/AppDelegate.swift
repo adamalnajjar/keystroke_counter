@@ -19,6 +19,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Raw event source that feeds `store`.
     lazy var monitor = EventMonitor(store: store)
 
+    /// Opt-in cross-Mac sync. Idle (no network) unless enabled in Settings.
+    lazy var sync = SyncClient(store: store)
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         // No Dock icon: this is a menu-bar-only ("agent") app. Done in code so we
         // don't rely on an Info.plist LSUIElement key.
@@ -35,6 +38,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         monitor.start()
+        sync.start()
     }
 
     func applicationWillTerminate(_ notification: Notification) {

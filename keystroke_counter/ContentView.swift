@@ -11,6 +11,7 @@ import ServiceManagement
 struct ContentView: View {
     let store: StatsStore
     let monitor: EventMonitor
+    @Bindable var sync: SyncClient
 
     /// Which time scope the headline totals summarise. Persisted across launches.
     @AppStorage("statsScope") private var scope: StatsScope = .today
@@ -26,6 +27,7 @@ struct ContentView: View {
     @State private var showResetConfirm = false
     @State private var showGoalEditor = false
     @State private var goalText = ""
+    @State private var tokenText = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -63,6 +65,7 @@ struct ContentView: View {
             Divider()
             CollapsibleSection(title: "Settings", isExpanded: $showSettings) {
                 goalSection
+                syncSection
             }
 
             Divider()
@@ -72,6 +75,7 @@ struct ContentView: View {
         }
         .padding(14)
         .frame(width: 320)
+        .onAppear { sync.syncIfStale() }
     }
 
     // MARK: Sections
@@ -189,7 +193,7 @@ struct ContentView: View {
     private var totalsCaption: String {
         switch scope {
         case .lifetime:
-            return "since \(store.since.formatted(date: .abbreviated, time: .shortened))"
+            return "since \(store.displaySince.formatted(date: .abbreviated, time: .shortened))"
         case .today:
             return "today"
         case .month:
@@ -313,6 +317,70 @@ struct ContentView: View {
         }
     }
 
+    private var syncSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Toggle(isOn: $sync.isEnabled) {
+                HStack {
+                    Image(systemName: "arrow.triangle.2.circlepath").frame(width: 20)
+                    Text("Sync across Macs")
+                }
+            }
+            .toggleStyle(.switch)
+            .controlSize(.small)
+            .font(.callout)
+
+            if sync.isEnabled {
+                TextField("Server URL (https://…)", text: $sync.serverURL)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit { Task { await sync.syncNow() } }
+                HStack {
+                    SecureField(sync.hasToken ? "Token saved — enter to replace" : "Sync token",
+                                text: $tokenText)
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit { saveToken() }
+                    Button("Save") { saveToken() }
+                        .controlSize(.small)
+                        .disabled(tokenText.isEmpty)
+                }
+                HStack {
+                    Text(syncStatusText)
+                        .font(.caption2)
+                        .foregroundStyle(syncStatusIsError ? Color.red : Color.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer()
+                    Button("Sync now") { Task { await sync.syncNow() } }
+                        .controlSize(.small)
+                        .disabled(sync.status == .syncing)
+                }
+            }
+        }
+    }
+
+    private var syncStatusText: String {
+        switch sync.status {
+        case .idle:
+            return "Not synced yet"
+        case .syncing:
+            return "Syncing…"
+        case .synced(let date):
+            let others = store.syncedDeviceNames
+            let with = others.isEmpty ? "no other Macs yet" : others.joined(separator: ", ")
+            return "Synced \(date.formatted(date: .omitted, time: .shortened)) · with \(with)"
+        case .failed(let message):
+            return message
+        }
+    }
+
+    private var syncStatusIsError: Bool {
+        if case .failed = sync.status { return true }
+        return false
+    }
+
+    private func saveToken() {
+        sync.saveToken(tokenText)
+        tokenText = ""
+    }
+
     private func saveGoal() {
         store.dailyGoal = max(0, Int(goalText) ?? 0)
         showGoalEditor = false
@@ -322,7 +390,9 @@ struct ContentView: View {
         HStack(alignment: .top, spacing: 6) {
             Image(systemName: "lock.shield")
                 .foregroundStyle(.secondary)
-            Text("Counts only — never what you type. All data stays on this Mac; no network access.")
+            Text(sync.isEnabled
+                 ? "Counts only — never what you type. Per-day counts sync to your server only."
+                 : "Counts only — never what you type. All data stays on this Mac; no network access.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.leading)
@@ -350,13 +420,13 @@ struct ContentView: View {
             Button("Reset") { showResetConfirm = true }
             Button("Quit") { NSApp.terminate(nil) }
         }
-        .confirmationDialog("Reset all-time totals?",
+        .confirmationDialog("Reset all-time totals on this Mac?",
                             isPresented: $showResetConfirm,
                             titleVisibility: .visible) {
             Button("Reset totals", role: .destructive) { store.reset() }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("This zeroes your all-time keystroke and click totals and the 'since' date. Your daily history charts are kept.")
+            Text("This zeroes this Mac's all-time keystroke and click totals and the 'since' date. Your daily history charts, and other synced Macs' totals, are kept.")
         }
     }
 }

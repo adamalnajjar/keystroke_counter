@@ -8,7 +8,13 @@
 //  clicks happened, how often each individual key was pressed, and which app was
 //  frontmost when events happened. It NEVER stores what you type — no words, no
 //  sequences, no ordered input, no window titles, no content of any kind. All
-//  data lives locally in Application Support; nothing is ever sent anywhere.
+//  data lives locally in Application Support. If the user opts in to sync,
+//  these same per-day counts are uploaded to their own server (SyncClient).
+//
+//  SYNC MODEL: `days` and the lifetime counters only ever hold THIS Mac's
+//  activity. Other Macs' contributions arrive as `remote*` (already summed by
+//  the server) and are added on top in every read API, so the two never mix
+//  and nothing can be counted twice.
 //
 
 import Foundation
@@ -38,7 +44,7 @@ enum StatsScope: String, CaseIterable, Identifiable {
 
 /// One day's worth of aggregate statistics. `Codable` so we can persist the
 /// whole history as JSON.
-struct DailyStats: Codable, Identifiable {
+struct DailyStats: Codable, Identifiable, Equatable {
     /// Start-of-day (local) date this bucket represents. Also the identity.
     var day: Date
     var keystrokes: Int = 0
@@ -106,6 +112,22 @@ final class StatsStore {
     @ObservationIgnored private var pendingDisplayRefresh: Task<Void, Never>?
     private let displayRefreshInterval: Duration = .seconds(1)
 
+    // MARK: Sync (other Macs' activity, summed by the server)
+
+    /// Other Macs' per-day stats, keyed by start-of-day. Added to `days` in reads.
+    @ObservationIgnored private var remoteDays: [Date: DailyStats] = [:]
+    /// Other Macs' all-time counters.
+    @ObservationIgnored private var remoteKeystrokes = 0
+    @ObservationIgnored private var remoteClicks = 0
+    /// Earliest "since" among the other Macs.
+    @ObservationIgnored private var remoteSince: Date?
+    /// Names of the other Macs contributing to the totals.
+    private(set) var syncedDeviceNames: [String] = []
+
+    /// Days whose local bucket changed since it was last uploaded. Persisted, so
+    /// changes made while offline (or just before quitting) still get uploaded.
+    @ObservationIgnored private var unsyncedDays: Set<Date>
+
     // MARK: Live typing speed (rolling window)
 
     /// Date-stamped ring buffer of recent keystroke timestamps used to compute a
@@ -123,6 +145,8 @@ final class StatsStore {
     // MARK: Persistence
 
     private let fileURL: URL
+    /// Cache of the last server response, so combined numbers show offline.
+    private let remoteFileURL: URL
 
     /// Pending coalesced save. The first change schedules one write after a
     /// short delay; further events reuse the same task instead of cancelling and
@@ -148,6 +172,26 @@ final class StatsStore {
         var hasSetGoal: Bool?
         /// Start-of-day the goal notification last fired (optional for old files).
         var goalNotifiedDay: Date?
+        /// Days not yet uploaded. nil (files from before sync existed) means
+        /// every day still needs uploading.
+        var unsyncedDays: [Date]?
+    }
+
+    /// What the server reports about the other Macs. Also the on-disk cache.
+    struct RemoteSnapshot: Codable {
+        var deviceNames: [String]
+        var keystrokes: Int
+        var clicks: Int
+        var since: Date?
+        var days: [DailyStats]
+    }
+
+    /// One upload's worth of this Mac's data, handed to SyncClient.
+    struct SyncUpload {
+        var keystrokes: Int
+        var clicks: Int
+        var since: Date
+        var days: [DailyStats]
     }
 
     // MARK: Init / load
@@ -164,6 +208,7 @@ final class StatsStore {
         let dir = base.appendingPathComponent(bundleID, isDirectory: true)
         try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
         self.fileURL = dir.appendingPathComponent("stats.json")
+        self.remoteFileURL = dir.appendingPathComponent("remote.json")
 
         // Defaults for a fresh install.
         var loadedKeystrokes = 0
@@ -177,6 +222,7 @@ final class StatsStore {
         var loadedGoal = 25_000
         var loadedHasSetGoal = false
         var loadedGoalNotifiedDay: Date?
+        var loadedUnsyncedDays: Set<Date>?
 
         if let data = try? Data(contentsOf: fileURL),
            let snapshot = try? JSONDecoder.iso.decode(Persisted.self, from: data) {
@@ -186,6 +232,7 @@ final class StatsStore {
             loadedDays = Dictionary(uniqueKeysWithValues: snapshot.days.map { ($0.day, $0) })
             loadedMilestones = Set(snapshot.reachedMilestones)
             loadedGoalNotifiedDay = snapshot.goalNotifiedDay
+            loadedUnsyncedDays = snapshot.unsyncedDays.map(Set.init)
             // Only honor the persisted goal if it was an explicit choice;
             // otherwise keep the fresh-install default above.
             if snapshot.hasSetGoal == true {
@@ -201,7 +248,13 @@ final class StatsStore {
         self.reachedMilestones = loadedMilestones
         self.hasSetGoal = loadedHasSetGoal
         self.goalNotifiedDay = loadedGoalNotifiedDay
+        self.unsyncedDays = loadedUnsyncedDays ?? Set(loadedDays.keys)
         self.dailyGoal = loadedGoal
+
+        if let data = try? Data(contentsOf: remoteFileURL),
+           let remote = try? JSONDecoder.iso.decode(RemoteSnapshot.self, from: data) {
+            setRemote(remote)
+        }
     }
 
     // MARK: Recording (called by EventMonitor — knows nothing about SwiftUI)
@@ -248,9 +301,80 @@ final class StatsStore {
         clickCount = 0
         since = Date()
         reachedMilestones = []
+        // Other Macs' lifetime counts aren't reset, so milestones they already
+        // carry the combined total past shouldn't all fire again at once.
+        markMilestonesReachedSilently()
         recentKeystrokes = []
         displayRevision &+= 1
         persist()
+    }
+
+    // MARK: Sync
+
+    /// This Mac's lifetime counters plus every day changed since its last
+    /// successful upload.
+    func pendingSyncUpload() -> SyncUpload {
+        SyncUpload(keystrokes: keystrokeCount,
+                   clicks: clickCount,
+                   since: since,
+                   days: unsyncedDays.compactMap { days[$0] })
+    }
+
+    /// Mark an upload as delivered and adopt the server's view of the other
+    /// Macs. Days that changed again while the request was in flight stay
+    /// pending for the next sync.
+    func completeSync(uploaded: SyncUpload, remote: RemoteSnapshot) {
+        for day in uploaded.days where days[day.day] == day {
+            unsyncedDays.remove(day.day)
+        }
+        setRemote(remote)
+        markMilestonesReachedSilently()
+        displayRevision &+= 1
+        persist()
+
+        if let data = try? JSONEncoder.iso.encode(remote) {
+            try? data.write(to: remoteFileURL, options: .atomic)
+        }
+    }
+
+    private func setRemote(_ remote: RemoteSnapshot) {
+        remoteDays = Dictionary(remote.days.map { ($0.day, $0) },
+                                uniquingKeysWith: { Self.merged($0, $1, day: $0.day) })
+        remoteKeystrokes = remote.keystrokes
+        remoteClicks = remote.clicks
+        remoteSince = remote.since
+        syncedDeviceNames = remote.deviceNames
+    }
+
+    /// Milestones only notify when typing on this Mac crosses them; ones the
+    /// combined total passed because of another Mac's activity (or a reset)
+    /// are recorded without a notification.
+    private func markMilestonesReachedSilently() {
+        let step = 100_000
+        var m = step
+        while m <= combinedTotal {
+            reachedMilestones.insert(m)
+            m += step
+        }
+    }
+
+    /// Add two buckets for the same day (either may be missing).
+    private static func merged(_ a: DailyStats?, _ b: DailyStats?, day: Date) -> DailyStats {
+        guard let a else { return b ?? DailyStats(day: day) }
+        guard let b else { return a }
+        var result = a
+        result.keystrokes += b.keystrokes
+        result.clicks += b.clicks
+        result.keyFrequency.merge(b.keyFrequency, uniquingKeysWith: +)
+        result.appFrequency.merge(b.appFrequency, uniquingKeysWith: +)
+        return result
+    }
+
+    /// Every bucket from this Mac and the other Macs. A day can appear twice
+    /// (once per source); everything that consumes this list only sums, so
+    /// that's equivalent to merging first.
+    private var allBuckets: [DailyStats] {
+        Array(days.values) + Array(remoteDays.values)
     }
 
     // MARK: Derived / read APIs for the UI
@@ -258,17 +382,24 @@ final class StatsStore {
     /// Today's bucket (empty if nothing recorded yet today).
     var today: DailyStats {
         _ = displayRevision
-        return days[Self.startOfDay(Date())] ?? DailyStats(day: Self.startOfDay(Date()))
+        let day = Self.startOfDay(Date())
+        return Self.merged(days[day], remoteDays[day], day: day)
     }
 
-    /// Headline keystroke/click totals for the given scope. `lifetime` uses the
-    /// all-time counters; `month`/`week` sum the per-day buckets that fall in the
+    /// Start of the lifetime totals: the earliest "since" across all Macs.
+    var displaySince: Date {
+        _ = displayRevision
+        return min(since, remoteSince ?? since)
+    }
+
+    /// Headline keystroke/click totals for the given scope, across all synced
+    /// Macs. `lifetime` uses the all-time counters; `month`/`week` sum the per-day buckets that fall in the
     /// current calendar month / week.
     func totals(for scope: StatsScope) -> (keystrokes: Int, clicks: Int) {
         _ = displayRevision
         switch scope {
         case .lifetime:
-            return (keystrokeCount, clickCount)
+            return (keystrokeCount + remoteKeystrokes, clickCount + remoteClicks)
         case .today:
             return (today.keystrokes, today.clicks)
         case .month:
@@ -282,7 +413,7 @@ final class StatsStore {
     private func sumDays(where include: (Date) -> Bool) -> (keystrokes: Int, clicks: Int) {
         var keystrokes = 0
         var clicks = 0
-        for (day, stats) in days where include(day) {
+        for stats in allBuckets where include(stats.day) {
             keystrokes += stats.keystrokes
             clicks += stats.clicks
         }
@@ -305,7 +436,7 @@ final class StatsStore {
         // Sum combined events per period, keyed by the period's start date, and
         // skip the in-progress current period.
         var combinedByPeriod: [Date: Int] = [:]
-        for stats in days.values {
+        for stats in allBuckets {
             guard let start = cal.dateInterval(of: component, for: stats.day)?.start,
                   start != currentStart else { continue }
             combinedByPeriod[start, default: 0] += stats.keystrokes + stats.clicks
@@ -324,7 +455,7 @@ final class StatsStore {
         let todayStart = Self.startOfDay(Date())
         return (0..<count).reversed().compactMap { offset -> DailyStats? in
             guard let day = cal.date(byAdding: .day, value: -offset, to: todayStart) else { return nil }
-            return days[day] ?? DailyStats(day: day)
+            return Self.merged(days[day], remoteDays[day], day: day)
         }
     }
 
@@ -361,12 +492,12 @@ final class StatsStore {
     private func dayBuckets(in scope: StatsScope) -> [DailyStats] {
         switch scope {
         case .lifetime:
-            return Array(days.values)
+            return allBuckets
         case .today:
             return [today]
         case .week, .month:
             let component: Calendar.Component = scope == .week ? .weekOfYear : .month
-            return days.values.filter {
+            return allBuckets.filter {
                 Calendar.current.isDate($0.day, equalTo: Date(), toGranularity: component)
             }
         }
@@ -394,8 +525,8 @@ final class StatsStore {
 
     // MARK: Milestones
 
-    /// Combined all-time events (keystrokes + clicks).
-    var combinedTotal: Int { keystrokeCount + clickCount }
+    /// Combined all-time events (keystrokes + clicks) across all synced Macs.
+    var combinedTotal: Int { keystrokeCount + clickCount + remoteKeystrokes + remoteClicks }
 
     /// Check for any newly crossed milestones and return them so the caller can
     /// fire notifications. Each milestone fires at most once (tracked in
@@ -459,6 +590,7 @@ final class StatsStore {
         var bucket = days[key] ?? DailyStats(day: key)
         body(&bucket)
         days[key] = bucket
+        unsyncedDays.insert(key)
     }
 
     /// Debounced save: coalesce a burst of events into a single disk write a
@@ -512,7 +644,8 @@ final class StatsStore {
             reachedMilestones: Array(reachedMilestones),
             dailyGoal: dailyGoal,
             hasSetGoal: hasSetGoal,
-            goalNotifiedDay: goalNotifiedDay
+            goalNotifiedDay: goalNotifiedDay,
+            unsyncedDays: Array(unsyncedDays)
         )
         guard let data = try? JSONEncoder.iso.encode(snapshot) else { return }
         try? data.write(to: fileURL, options: .atomic)

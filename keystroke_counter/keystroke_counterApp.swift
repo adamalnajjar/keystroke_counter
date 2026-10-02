@@ -6,7 +6,8 @@
 //  the compact abbreviation rule; the dropdown (window style) shows full detail.
 //
 //  PRIVACY: This app records aggregate counts only — never what you type — and
-//  keeps everything local with no network access. See StatsStore for details.
+//  keeps everything local unless the user opts in to syncing with their own
+//  server. See StatsStore and SyncClient for details.
 //
 
 import SwiftUI
@@ -17,7 +18,7 @@ struct keystroke_counterApp: App {
 
     var body: some Scene {
         MenuBarExtra {
-            ContentView(store: appDelegate.store, monitor: appDelegate.monitor)
+            ContentView(store: appDelegate.store, monitor: appDelegate.monitor, sync: appDelegate.sync)
         } label: {
             MenuBarLabel(store: appDelegate.store)
         }

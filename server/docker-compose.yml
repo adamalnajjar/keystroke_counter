@@ -1,0 +1,23 @@
+# Pi deployment: ~/server/apps/keystroke-sync on the Pi.
+#
+# First run:
+#   echo "SYNC_TOKEN=$(openssl rand -hex 32)" > .env
+#   mkdir -p data
+#   docker compose up -d --build
+#
+# Published on 127.0.0.1 only: the cloudflared tunnel (on the host) is the sole
+# way in. 8085 is the next free port after playlist-creator's 8084. Map it to a
+# hostname under Cloudflare Zero Trust > Networks > Tunnels > pi > Public Hostnames.
+
+services:
+  app:
+    build: .
+    image: keystroke-sync
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DB_PATH: /data/sync.db
+    ports:
+      - "127.0.0.1:${APP_HTTP_PORT:-8085}:8080"
+    volumes:
+      - ./data:/data
