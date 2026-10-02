@@ -33,6 +33,11 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 12) {
             scopePicker
 
+            // Only meaningful once another Mac has synced.
+            if store.hasOtherMacs {
+                sourcePicker
+            }
+
             if !monitor.isTrusted {
                 permissionBanner
             }
@@ -88,6 +93,18 @@ struct ContentView: View {
         }
         .pickerStyle(.segmented)
         .labelsHidden()
+    }
+
+    /// This Mac vs all synced Macs. Applies to every section on every tab.
+    private var sourcePicker: some View {
+        Picker("Source", selection: Binding(get: { store.source }, set: { store.source = $0 })) {
+            ForEach(StatsSource.allCases) { source in
+                Text(source.title).tag(source)
+            }
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .controlSize(.small)
     }
 
     private var permissionBanner: some View {
@@ -189,8 +206,17 @@ struct ContentView: View {
         }
     }
 
-    /// Sub-caption under the totals describing the active scope's period.
+    /// Sub-caption under the totals describing the active scope's period, plus
+    /// whose activity it covers when other Macs are synced.
     private var totalsCaption: String {
+        guard store.hasOtherMacs else { return periodCaption }
+        let macs = store.source == .combined
+            ? "\(store.syncedDeviceNames.count + 1) Macs"
+            : "this Mac"
+        return "\(periodCaption) · \(macs)"
+    }
+
+    private var periodCaption: String {
         switch scope {
         case .lifetime:
             return "since \(store.displaySince.formatted(date: .abbreviated, time: .shortened))"

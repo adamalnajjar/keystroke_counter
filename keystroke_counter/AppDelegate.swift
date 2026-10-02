@@ -37,8 +37,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.checkMilestones()
         }
 
-        monitor.start()
         sync.start()
+        monitor.start()
     }
 
     func applicationWillTerminate(_ notification: Notification) {

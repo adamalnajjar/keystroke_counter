@@ -33,6 +33,7 @@ final class SyncClient {
     var isEnabled: Bool {
         didSet {
             UserDefaults.standard.set(isEnabled, forKey: Keys.enabled)
+            store.isSyncActive = isEnabled
             if isEnabled { Task { await syncNow() } } else { status = .idle }
         }
     }
@@ -72,6 +73,7 @@ final class SyncClient {
         self.isEnabled = UserDefaults.standard.bool(forKey: Keys.enabled)
         self.serverURL = UserDefaults.standard.string(forKey: Keys.serverURL) ?? ""
         self.hasToken = Keychain.token() != nil
+        store.isSyncActive = isEnabled
     }
 
     // MARK: Scheduling

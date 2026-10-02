@@ -55,6 +55,21 @@ enum StatsScope: String, CaseIterable, Identifiable {
     }
 }
 
+/// Whose activity the panel shows when sync has other Macs to add in.
+enum StatsSource: String, CaseIterable, Identifiable {
+    case thisMac
+    case combined
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .thisMac: return "This Mac"
+        case .combined: return "Combined"
+        }
+    }
+}
+
 /// One day's worth of aggregate statistics. `Codable` so we can persist the
 /// whole history as JSON.
 struct DailyStats: Codable, Identifiable, Equatable {
@@ -136,6 +151,29 @@ final class StatsStore {
     @ObservationIgnored private var remoteSince: Date?
     /// Names of the other Macs contributing to the totals.
     private(set) var syncedDeviceNames: [String] = []
+
+    /// Whether sync is turned on. Set by SyncClient. While off, cached data
+    /// from other Macs is ignored everywhere, since it's no longer kept fresh.
+    var isSyncActive = false {
+        didSet {
+            guard isSyncActive, !oldValue else { return }
+            // Other Macs' totals just joined the combined total.
+            markMilestonesReachedSilently()
+            persist()
+        }
+    }
+
+    /// Whose activity the read APIs report. Milestones and the daily-goal
+    /// notification ignore this and always use the combined total, so
+    /// switching the view can't change what gets notified.
+    var source: StatsSource = StatsSource(
+        rawValue: UserDefaults.standard.string(forKey: "statsSource") ?? ""
+    ) ?? .combined {
+        didSet { UserDefaults.standard.set(source.rawValue, forKey: "statsSource") }
+    }
+
+    /// Whether there's other-Mac data to choose between (drives the switch).
+    var hasOtherMacs: Bool { isSyncActive && !syncedDeviceNames.isEmpty }
 
     /// Days whose local bucket changed since it was last uploaded. Persisted, so
     /// changes made while offline (or just before quitting) still get uploaded.
@@ -383,11 +421,17 @@ final class StatsStore {
         return result
     }
 
-    /// Every bucket from this Mac and the other Macs. A day can appear twice
-    /// (once per source); everything that consumes this list only sums, so
-    /// that's equivalent to merging first.
+    /// Whether the read APIs should add the other Macs' data in.
+    private var showsRemote: Bool { isSyncActive && source == .combined }
+
+    /// The other Macs' days, or none when the view is "This Mac".
+    private var shownRemoteDays: [Date: DailyStats] { showsRemote ? remoteDays : [:] }
+
+    /// Every bucket in the current view. A day can appear twice (once from
+    /// this Mac, once from the others); everything that consumes this list
+    /// only sums, so that's equivalent to merging first.
     private var allBuckets: [DailyStats] {
-        Array(days.values) + Array(remoteDays.values)
+        Array(days.values) + Array(shownRemoteDays.values)
     }
 
     // MARK: Derived / read APIs for the UI
@@ -396,13 +440,13 @@ final class StatsStore {
     var today: DailyStats {
         _ = displayRevision
         let day = Self.startOfDay(Date())
-        return Self.merged(days[day], remoteDays[day], day: day)
+        return Self.merged(days[day], shownRemoteDays[day], day: day)
     }
 
     /// Start of the lifetime totals: the earliest "since" across all Macs.
     var displaySince: Date {
         _ = displayRevision
-        return min(since, remoteSince ?? since)
+        return showsRemote ? min(since, remoteSince ?? since) : since
     }
 
     /// Headline keystroke/click totals for the given scope, across all synced
@@ -412,7 +456,9 @@ final class StatsStore {
         _ = displayRevision
         switch scope {
         case .lifetime:
-            return (keystrokeCount + remoteKeystrokes, clickCount + remoteClicks)
+            return showsRemote
+                ? (keystrokeCount + remoteKeystrokes, clickCount + remoteClicks)
+                : (keystrokeCount, clickCount)
         case .today:
             return (today.keystrokes, today.clicks)
         case .month:
@@ -468,7 +514,7 @@ final class StatsStore {
         let todayStart = Self.startOfDay(Date())
         return (0..<count).reversed().compactMap { offset -> DailyStats? in
             guard let day = cal.date(byAdding: .day, value: -offset, to: todayStart) else { return nil }
-            return Self.merged(days[day], remoteDays[day], day: day)
+            return Self.merged(days[day], shownRemoteDays[day], day: day)
         }
     }
 
@@ -539,7 +585,9 @@ final class StatsStore {
     // MARK: Milestones
 
     /// Combined all-time events (keystrokes + clicks) across all synced Macs.
-    var combinedTotal: Int { keystrokeCount + clickCount + remoteKeystrokes + remoteClicks }
+    var combinedTotal: Int {
+        keystrokeCount + clickCount + (isSyncActive ? remoteKeystrokes + remoteClicks : 0)
+    }
 
     /// Check for any newly crossed milestones and return them so the caller can
     /// fire notifications. Each milestone fires at most once (tracked in
@@ -583,9 +631,14 @@ final class StatsStore {
 
     /// Whether the goal is reached today but the once-per-day notification hasn't
     /// been posted yet. Pair with `markDailyGoalNotified()` so it can't re-fire,
-    /// including across relaunches.
+    /// including across relaunches. Always counts every synced Mac, regardless
+    /// of `source`, so the notification doesn't depend on the panel's view.
     var isDailyGoalReachedUnnotified: Bool {
-        isDailyGoalReached && goalNotifiedDay != Self.startOfDay(Date())
+        let day = Self.startOfDay(Date())
+        let allMacs = Self.merged(days[day], isSyncActive ? remoteDays[day] : nil, day: day)
+        return dailyGoal > 0
+            && allMacs.keystrokes + allMacs.clicks >= dailyGoal
+            && goalNotifiedDay != day
     }
 
     /// Record that today's goal notification has fired (persisted).
