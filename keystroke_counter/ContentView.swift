@@ -28,16 +28,58 @@ struct ContentView: View {
     @State private var showGoalEditor = false
     @State private var goalText = ""
     @State private var tokenText = ""
+    @State private var showSyncEditor = false
+
+    /// Measured height of the scrollable middle section, so the panel can be
+    /// exactly as tall as its content until it hits the screen limit.
+    @State private var scrollContentHeight: CGFloat = 600
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            scopePicker
+        // Tabs pinned at the top, Reset/Quit pinned at the bottom, everything
+        // else scrolls once the panel would be taller than the screen.
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 8) {
+                scopePicker
 
-            // Only meaningful once another Mac has synced.
-            if store.hasOtherMacs {
-                sourcePicker
+                // Only meaningful once another Mac has synced.
+                if store.hasOtherMacs {
+                    sourcePicker
+                }
             }
+            .padding([.horizontal, .top], 14)
+            .padding(.bottom, 10)
 
+            ScrollView(.vertical) {
+                scrollingContent
+                    .padding(.horizontal, 14)
+                    .padding(.bottom, 10)
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: {
+                        scrollContentHeight = $0
+                    }
+            }
+            .scrollBounceBehavior(.basedOnSize)
+            .frame(height: min(scrollContentHeight, maxScrollHeight))
+
+            VStack(alignment: .leading, spacing: 12) {
+                Divider()
+                privacyFooter
+                controls
+            }
+            .padding([.horizontal, .bottom], 14)
+        }
+        .frame(width: 320)
+        .onAppear { sync.syncIfStale() }
+    }
+
+    /// Room for the scrolling section: the screen's usable height minus the
+    /// pinned header and footer, with a margin below the panel.
+    private var maxScrollHeight: CGFloat {
+        let screen = NSScreen.main?.visibleFrame.height ?? 800
+        return max(240, screen - 190)
+    }
+
+    private var scrollingContent: some View {
+        VStack(alignment: .leading, spacing: 12) {
             if !monitor.isTrusted {
                 permissionBanner
             }
@@ -72,15 +114,7 @@ struct ContentView: View {
                 goalSection
                 syncSection
             }
-
-            Divider()
-            privacyFooter
-
-            controls
         }
-        .padding(14)
-        .frame(width: 320)
-        .onAppear { sync.syncIfStale() }
     }
 
     // MARK: Sections
@@ -356,42 +390,82 @@ struct ContentView: View {
             .font(.callout)
 
             if sync.isEnabled {
-                TextField("Server URL (https://…)", text: $sync.serverURL)
-                    .textFieldStyle(.roundedBorder)
-                    .onSubmit { Task { await sync.syncNow() } }
-                HStack {
-                    SecureField(sync.hasToken ? "Token saved — enter to replace" : "Sync token",
-                                text: $tokenText)
-                        .textFieldStyle(.roundedBorder)
-                        .onSubmit { saveToken() }
-                    Button("Save") { saveToken() }
-                        .controlSize(.small)
-                        .disabled(tokenText.isEmpty)
+                // Text fields only exist while editing (or before setup), so
+                // they can't grab focus — and your typing — whenever the
+                // panel opens.
+                if showSyncEditor || !sync.isConfigured {
+                    syncEditor
+                } else {
+                    HStack {
+                        Image(systemName: "server.rack")
+                            .foregroundStyle(.secondary)
+                            .frame(width: 20)
+                        Text(sync.serverHost ?? "")
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Spacer()
+                        Button("Edit") { showSyncEditor = true }
+                            .controlSize(.small)
+                    }
+                    .font(.callout)
                 }
-                HStack {
+
+                HStack(alignment: .firstTextBaseline) {
                     Text(syncStatusText)
                         .font(.caption2)
                         .foregroundStyle(syncStatusIsError ? Color.red : Color.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                     Spacer()
-                    Button("Sync now") { Task { await sync.syncNow() } }
-                        .controlSize(.small)
-                        .disabled(sync.status == .syncing)
+                    if sync.isConfigured {
+                        Button("Sync now") { Task { await sync.syncNow() } }
+                            .controlSize(.small)
+                            .disabled(sync.status == .syncing)
+                    }
+                }
+            }
+        }
+    }
+
+    private var syncEditor: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            TextField("Server URL (https://…)", text: $sync.serverURL)
+                .textFieldStyle(.roundedBorder)
+                .onSubmit { Task { await sync.syncNow() } }
+            HStack {
+                SecureField(sync.hasToken ? "Token saved — enter to replace" : "Sync token",
+                            text: $tokenText)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit { saveToken() }
+                Button("Save") { saveToken() }
+                    .controlSize(.small)
+                    .disabled(tokenText.isEmpty)
+            }
+            if sync.isConfigured {
+                HStack {
+                    Spacer()
+                    Button("Done") {
+                        showSyncEditor = false
+                        Task { await sync.syncNow() }
+                    }
+                    .controlSize(.small)
                 }
             }
         }
     }
 
     private var syncStatusText: String {
+        let last = sync.lastSynced.map { "last synced \($0.formatted(date: .omitted, time: .shortened))" }
         switch sync.status {
-        case .idle:
-            return "Not synced yet"
+        case .needsSetup:
+            return "Add your server URL and token to start syncing."
         case .syncing:
             return "Syncing…"
-        case .synced(let date):
+        case .synced:
             let others = store.syncedDeviceNames
             let with = others.isEmpty ? "no other Macs yet" : others.joined(separator: ", ")
-            return "Synced \(date.formatted(date: .omitted, time: .shortened)) · with \(with)"
+            return "Synced \(sync.lastSynced?.formatted(date: .omitted, time: .shortened) ?? "") · with \(with)"
+        case .retrying(let reason):
+            return [reason, last, "retrying"].compactMap { $0 }.joined(separator: " · ")
         case .failed(let message):
             return message
         }
@@ -405,6 +479,8 @@ struct ContentView: View {
     private func saveToken() {
         sync.saveToken(tokenText)
         tokenText = ""
+        // Once set up, fold back to the compact row.
+        if sync.isConfigured { showSyncEditor = false }
     }
 
     private func saveGoal() {

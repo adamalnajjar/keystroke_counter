@@ -22,19 +22,29 @@ import Security
 final class SyncClient {
 
     enum Status: Equatable {
-        case idle
+        /// No server URL or token yet. Shown as a hint, not an error.
+        case needsSetup
         case syncing
-        case synced(Date)
+        case synced
+        /// A transient problem (offline, server down) that the next sync will
+        /// likely fix on its own. Shown calmly, with the last successful sync.
+        case retrying(String)
+        /// Something the user has to fix (bad URL, rejected token).
         case failed(String)
     }
 
-    private(set) var status: Status = .idle
+    private(set) var status: Status = .needsSetup
+
+    /// When a sync last succeeded. Persisted, so "last synced" survives relaunch.
+    private(set) var lastSynced: Date? {
+        didSet { UserDefaults.standard.set(lastSynced, forKey: Keys.lastSynced) }
+    }
 
     var isEnabled: Bool {
         didSet {
             UserDefaults.standard.set(isEnabled, forKey: Keys.enabled)
             store.isSyncActive = isEnabled
-            if isEnabled { Task { await syncNow() } } else { status = .idle }
+            if isEnabled { Task { await syncNow() } } else { status = .needsSetup }
         }
     }
 
@@ -45,6 +55,12 @@ final class SyncClient {
     /// Whether a token is saved in the Keychain (the token itself is never
     /// held in an observed property).
     private(set) var hasToken: Bool
+
+    /// Both a usable server URL and a token are set.
+    var isConfigured: Bool { endpointURL() != nil && hasToken }
+
+    /// The server's host name, for the compact settings row.
+    var serverHost: String? { endpointURL()?.host() }
 
     @ObservationIgnored private let store: StatsStore
     @ObservationIgnored private var loop: Task<Void, Never>?
@@ -66,6 +82,7 @@ final class SyncClient {
         static let enabled = "syncEnabled"
         static let serverURL = "syncServerURL"
         static let deviceID = "syncDeviceID"
+        static let lastSynced = "syncLastSynced"
     }
 
     init(store: StatsStore) {
@@ -73,6 +90,7 @@ final class SyncClient {
         self.isEnabled = UserDefaults.standard.bool(forKey: Keys.enabled)
         self.serverURL = UserDefaults.standard.string(forKey: Keys.serverURL) ?? ""
         self.hasToken = Keychain.token() != nil
+        self.lastSynced = UserDefaults.standard.object(forKey: Keys.lastSynced) as? Date
         store.isSyncActive = isEnabled
     }
 
@@ -108,11 +126,12 @@ final class SyncClient {
     func syncNow() async {
         guard isEnabled, status != .syncing else { return }
         guard let endpoint = endpointURL() else {
-            status = .failed("Enter a valid https:// server URL")
+            let entered = !serverURL.trimmingCharacters(in: .whitespaces).isEmpty
+            status = entered ? .failed("Server URL must start with https://") : .needsSetup
             return
         }
         guard let token = Keychain.token() else {
-            status = .failed("Enter the sync token")
+            status = .needsSetup
             return
         }
 
@@ -134,7 +153,7 @@ final class SyncClient {
             let (data, response) = try await URLSession.shared.data(for: request)
             let code = (response as? HTTPURLResponse)?.statusCode ?? 0
             guard code == 200 else {
-                status = .failed(code == 401 ? "Server rejected the token" : "Server error (HTTP \(code))")
+                status = Self.status(forHTTPCode: code)
                 return
             }
 
@@ -145,11 +164,24 @@ final class SyncClient {
                 clicks: others.lifetime.clicks,
                 since: others.lifetime.since,
                 days: others.days.compactMap(\.dailyStats)))
-            status = .synced(Date())
+            lastSynced = Date()
+            status = .synced
         } catch let error as URLError {
-            status = .failed(error.code == .notConnectedToInternet ? "Offline" : "Can't reach server")
+            let offline: Set<URLError.Code> = [.notConnectedToInternet, .networkConnectionLost, .dataNotAllowed]
+            status = .retrying(offline.contains(error.code) ? "Offline" : "Can't reach server")
         } catch {
             status = .failed("Unexpected server response")
+        }
+    }
+
+    /// Map a non-200 response to a status. When the Pi is down, Cloudflare
+    /// still answers on its behalf with a 5xx (often 502 or 530), which is a
+    /// "server unavailable, will retry" situation rather than an error.
+    private static func status(forHTTPCode code: Int) -> Status {
+        switch code {
+        case 401: return .failed("Server rejected the token")
+        case 429, 500...599: return .retrying("Server unavailable")
+        default: return .failed("Unexpected server response (HTTP \(code))")
         }
     }
 

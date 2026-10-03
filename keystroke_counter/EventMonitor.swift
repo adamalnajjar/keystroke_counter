@@ -30,6 +30,9 @@ final class EventMonitor {
     private var globalKeyMonitor: Any?
     private var globalMouseMonitor: Any?
 
+    /// Watches for the Accessibility grant (or its removal) while the app runs.
+    private var trustWatcher: Task<Void, Never>?
+
     init(store: StatsStore) {
         self.store = store
     }
@@ -37,10 +40,9 @@ final class EventMonitor {
     // MARK: Accessibility permission
 
     /// Whether the process is trusted for Accessibility (required to observe
-    /// global keyboard events).
-    var isTrusted: Bool {
-        AXIsProcessTrusted()
-    }
+    /// global keyboard events). Stored rather than computed so the panel's
+    /// permission banner updates when `trustWatcher` sees it change.
+    private(set) var isTrusted = AXIsProcessTrusted()
 
     /// Prompt the user for Accessibility permission (shows the system dialog the
     /// first time, then deep-links to System Settings).
@@ -51,10 +53,33 @@ final class EventMonitor {
 
     // MARK: Lifecycle
 
-    /// Start watching for keystrokes and clicks.
+    /// Start watching for keystrokes and clicks, and for permission changes.
     func start() {
+        installMonitors()
+        watchTrust()
+    }
+
+    /// A global key monitor installed before Accessibility was granted never
+    /// receives key events, even after the grant. So poll for the grant (every
+    /// 2s while untrusted, every 10s after, to notice a revocation) and
+    /// reinstall the monitors the moment it arrives — no relaunch needed.
+    private func watchTrust() {
+        guard trustWatcher == nil else { return }
+        trustWatcher = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                try? await Task.sleep(for: .seconds(self.isTrusted ? 10 : 2))
+                let trusted = AXIsProcessTrusted()
+                guard trusted != self.isTrusted else { continue }
+                self.isTrusted = trusted
+                if trusted { self.installMonitors() }
+            }
+        }
+    }
+
+    private func installMonitors() {
         // Avoid double-installing monitors.
-        stop()
+        removeMonitors()
 
         let keyMask: NSEvent.EventTypeMask = [.keyDown]
         let mouseMask: NSEvent.EventTypeMask = [.leftMouseDown, .rightMouseDown, .otherMouseDown]
@@ -70,6 +95,12 @@ final class EventMonitor {
 
     /// Stop watching and remove all monitors.
     func stop() {
+        trustWatcher?.cancel()
+        trustWatcher = nil
+        removeMonitors()
+    }
+
+    private func removeMonitors() {
         for monitor in [globalKeyMonitor, globalMouseMonitor] {
             if let monitor { NSEvent.removeMonitor(monitor) }
         }
