@@ -15,12 +15,18 @@ There's no setup beyond granting one macOS permission (more on that below). Once
 ## Features
 
 - **Stats at a glance** — keystroke and click totals for Today, This Week, This Month, and Lifetime
+- **Optional menu bar icon** — show a keyboard symbol beside today's counts, or turn it off in Settings
+- **Combined or separate counts** — Settings can prioritise one keystrokes-plus-clicks total across the panel, menu bar and chart
 - **Records** — your best previous day/week/month, shown as a target to beat
 - **History charts** — a 7- or 30-day view of daily keystrokes vs. clicks
-- **Most-used keys and apps** — frequency breakdowns per time scope
-- **Live typing speed** — a rolling keys-per-minute / words-per-minute readout
+- **Goal colours** — history bars turn green for days that meet your current daily goal
+- **Top activity** — one collapsible section with Keys and Apps tabs, showing frequency breakdowns for the selected time scope
 - **Daily goals** — set a combined keystrokes-plus-clicks target, with a progress bar and an optional notification when you hit it
 - **Milestones** — a notification every 100,000 lifetime events
+- **Achievements** — a collapsible 3×3 challenge grid with progress rings, earned tier labels and clickable descriptions with per-tier earned dates. Existing dates are recovered from history when available; otherwise the date is unavailable. Nine visible challenges cover goal days, combined events, keystrokes, clicks, space-bar presses and activity in a single app. Millionaires Lounge unlocks at 5M, 10M, 25M, 50M and 100M events; its ring restarts toward each next tier. A hidden Billionaires Club appears beneath the grid only after 1B events.
+- **Weekly consistency** — choose a target of 1–7 daily-goal days per week; days off don't erase earned badges
+- **Personal bests** — celebrate beating your previous day, week or month once per period
+- **Notification controls** — individual switches for goals, milestones, records, badges, weekly consistency and sound in Settings
 - **Launch at login**
 - **Optional sync across your Macs** — through a small server you host yourself (see [Sync](#sync))
 - **Everything stored locally** — nothing leaves your Mac unless you turn on sync (see [Privacy](#privacy))
@@ -79,9 +85,10 @@ A signed, notarized downloadable build is planned but not available yet (see [Ro
 The app is a small, single-target SwiftUI project with no external dependencies:
 
 - **`EventMonitor`** installs global `NSEvent` monitors for key-down and mouse-down events and forwards a key label, an event type, and the frontmost app's name to the store.
-- **`StatsStore`** is the single source of truth: an `@Observable` model that keeps lifetime totals and a per-day history, debounces disk writes, and computes the derived values (scoped totals, records, top keys/apps, typing speed) the UI reads.
+- **`StatsStore`** is the single source of truth: an `@Observable` model that keeps lifetime totals and a per-day history, debounces disk writes, and computes the derived values (scoped totals, records, top keys/apps) the UI reads.
 - **`ContentView`** is the dropdown panel shown from the menu bar; **`StatsChartView`** renders the history chart with Swift Charts.
-- **`NotificationManager`** posts local notifications for milestones and daily goals — nothing more.
+- **`NotificationManager`** posts local goal, milestone, record, achievement and consistency alerts, respecting each notification switch and the sound setting.
+- **`GameProgress`** keeps earned tiers, highest recorded challenge progress and celebration bookkeeping across launches and resets. It credits existing goal days once, using the goal set at first use; subsequent goal changes don't re-credit old days. Weekly consistency uses the current daily goal and the calendar week. Celebrations use all active synced Macs, regardless of the display selection. Space-bar and per-app challenges use retained daily history; the app challenge counts keystrokes plus clicks in any single app. Existing badges migrate to their first earned tier.
 - **`SyncClient`** (opt-in) uploads this Mac's per-day counts to your sync server and fetches the other Macs' totals. Idle unless sync is enabled.
 
 ## Data storage
@@ -127,5 +134,4 @@ KeystrokeCounter is released under the [MIT License](LICENSE).
 A short list of known gaps, not a feature wishlist:
 
 - A signed, notarized downloadable build
-- A dedicated app icon (the app currently ships with the Xcode default)
 - Screenshots in this README

@@ -1,0 +1,12 @@
+Generated with the built-in image-generation tool. These are presentation mockups for selection, not final app-icon assets.
+
+Selected final asset: progress-a-key-final.png. Derived from Progress key with a centered dark-grey engraved capital A, the green arc reversed to run clockwise from 12 through 3 and 6 to 8 o'clock, inactive grey arc in the upper left, and the presentation background removed to transparent alpha. Preserve the charcoal tile, tactile ivory key, luminous green ring and soft lighting. Full square tile visible with a small margin. Generated with the built-in image tool; exported to all 10 macOS icon sizes.
+
+Tally key
+A macOS app icon mockup for KeystrokeCounter: one tactile ivory keyboard key with three crisp engraved tally strokes, on a deep midnight-blue rounded-square app tile. Subtle premium 3D depth, softly lit bevels, restrained composition. Front view, centered, single icon large on a neutral pale grey presentation background. No words, letters, numbers, logos or extra objects. Reads clearly at small size. Use-case: logo-brand.
+
+Progress key
+A macOS app icon mockup for KeystrokeCounter: a simple white keyboard-key silhouette inside a partly completed emerald progress ring, on a dark charcoal rounded-square tile. Elegant tactile relief, subtle soft light, bold simple shapes legible at small size. Front view, centered, single icon large on neutral pale grey presentation background. No words, letters, numbers or additional objects. Use-case: logo-brand.
+
+Counter keys
+A macOS app icon mockup for KeystrokeCounter: three chunky keyboard keys of ascending height forming a little bar chart, ivory keys on a rich violet rounded-square tile, last key capped with a small emerald accent. Playful polished tactile 3D, restrained soft lighting, strong silhouette at small size. Front view, centered, single icon large on neutral pale grey presentation background. No words, letters, numbers or additional objects. Use-case: logo-brand.

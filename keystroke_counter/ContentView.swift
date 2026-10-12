@@ -8,23 +8,39 @@
 import SwiftUI
 import ServiceManagement
 
+private enum ActivityTab: String {
+    case keys, apps
+}
+
 struct ContentView: View {
     let store: StatsStore
     let monitor: EventMonitor
     @Bindable var sync: SyncClient
+    let game: GameProgress
 
     /// Which time scope the headline totals summarise. Persisted across launches.
     @AppStorage("statsScope") private var scope: StatsScope = .today
 
     /// Expansion state for the collapsible stat sections. Persisted across launches.
     @AppStorage("showHistory") private var showHistory = true
-    @AppStorage("showKeys") private var showKeys = true
-    @AppStorage("showApps") private var showApps = true
+    @AppStorage("showTopActivity") private var showTopActivity = true
+    @AppStorage("topActivityTab") private var activityTab: ActivityTab = .keys
     @AppStorage("showSettings") private var showSettings = false
+    @AppStorage("showMenuBarIcon") private var showMenuBarIcon = true
+    @AppStorage("prioritiseCombinedCount") private var prioritiseCombinedCount = false
+    @AppStorage("showAchievements") private var showAchievements = false
+    @AppStorage("weeklyGoalDays") private var weeklyGoalDays = 4
+    @AppStorage("notifyDailyGoal") private var notifyDailyGoal = true
+    @AppStorage("notifyMilestones") private var notifyMilestones = true
+    @AppStorage("notifyRecords") private var notifyRecords = true
+    @AppStorage("notifyAchievements") private var notifyAchievements = true
+    @AppStorage("notifyConsistency") private var notifyConsistency = true
+    @AppStorage("notificationSound") private var notificationSound = true
 
     /// Launch-at-login toggle, backed by SMAppService.
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @State private var showResetConfirm = false
+    @State private var showRecordDetails = false
     @State private var showGoalEditor = false
     @State private var goalText = ""
     @State private var tokenText = ""
@@ -35,7 +51,7 @@ struct ContentView: View {
     @State private var scrollContentHeight: CGFloat = 600
 
     var body: some View {
-        // Tabs pinned at the top, Reset/Quit pinned at the bottom, everything
+        // Tabs pinned at the top, Quit pinned at the bottom, everything
         // else scrolls once the panel would be taller than the screen.
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 8) {
@@ -92,7 +108,27 @@ struct ContentView: View {
                 goalProgress
             }
 
-            liveSpeed
+            Divider()
+            CollapsibleSection(title: "Achievements", isExpanded: $showAchievements) {
+                achievementsSection
+            }
+
+            Divider()
+            CollapsibleSection(title: "Top activity \(scopeSuffix)", isExpanded: $showTopActivity) {
+                Picker("Activity", selection: $activityTab) {
+                    Text("Keys").tag(ActivityTab.keys)
+                    Text("Apps").tag(ActivityTab.apps)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .controlSize(.small)
+
+                if activityTab == .keys {
+                    topKeysContent
+                } else {
+                    topAppsContent
+                }
+            }
 
             Divider()
             CollapsibleSection(title: "History", isExpanded: $showHistory) {
@@ -100,24 +136,86 @@ struct ContentView: View {
             }
 
             Divider()
-            CollapsibleSection(title: "Most-used keys \(scopeSuffix)", isExpanded: $showKeys) {
-                topKeysContent
-            }
-
-            Divider()
-            CollapsibleSection(title: "Top apps \(scopeSuffix)", isExpanded: $showApps) {
-                topAppsContent
-            }
-
-            Divider()
             CollapsibleSection(title: "Settings", isExpanded: $showSettings) {
+                Toggle("Show menu bar icon", isOn: $showMenuBarIcon)
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+                    .font(.callout)
+                Toggle("Prioritise combined count", isOn: $prioritiseCombinedCount)
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+                    .font(.callout)
+                Text("Show keystrokes + clicks as one total in the panel, menu bar and history chart.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
                 goalSection
+                Stepper("Weekly goal: \(weeklyGoalDays) days", value: $weeklyGoalDays, in: 1...7)
+                    .font(.callout)
+                Text("Days this week that meet your current daily goal. Days off don't erase earned badges.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                notificationSettings
                 syncSection
+                settingsControls
             }
         }
     }
 
     // MARK: Sections
+
+    private var achievementsSection: some View {
+        let summary = store.gameSummary()
+        return VStack(alignment: .leading, spacing: 10) {
+            if store.dailyGoal > 0 {
+                HStack {
+                    Text("Weekly consistency").font(.caption).bold()
+                    Spacer()
+                    Text("\(summary.weeklyGoalDays) / \(weeklyGoalDays) days").font(.caption).monospacedDigit()
+                }
+                ProgressView(value: min(1, Double(summary.weeklyGoalDays) / Double(max(1, weeklyGoalDays))))
+                    .tint(summary.weeklyGoalDays >= weeklyGoalDays ? .green : .accentColor)
+            } else {
+                Text("Set a daily goal to track weekly consistency.")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
+            let publicBadges = Achievement.all.filter { !$0.hiddenUntilEarned }
+            let secretBadges = Achievement.all.filter { $0.hiddenUntilEarned && game.status(for: $0, summary: summary).earnedTier > 0 }
+            let visibleBadges = publicBadges + secretBadges
+            let earnedCount = visibleBadges.filter { game.status(for: $0, summary: summary).earnedTier > 0 }.count
+            Text("\(earnedCount) of \(visibleBadges.count) challenges earned · \(game.goalDays.count) goal days")
+                .font(.caption2).foregroundStyle(.secondary)
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 3), spacing: 16) {
+                ForEach(publicBadges) { badge in
+                    AchievementTile(status: game.status(for: badge, summary: summary))
+                }
+            }
+            ForEach(secretBadges) { badge in
+                HStack {
+                    Spacer()
+                    AchievementTile(status: game.status(for: badge, summary: summary))
+                        .frame(width: 90)
+                    Spacer()
+                }
+            }
+            Text("Gold icons are earned. Blue rings track the next target. Uses all synced Macs; earned tiers and progress are kept.")
+                .font(.caption2).foregroundStyle(.secondary)
+        }
+    }
+
+    private var notificationSettings: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Notifications").font(.caption).foregroundStyle(.secondary)
+            Toggle("Daily goal", isOn: $notifyDailyGoal)
+            Toggle("Lifetime milestones", isOn: $notifyMilestones)
+            Toggle("Personal bests", isOn: $notifyRecords)
+            Toggle("Achievements", isOn: $notifyAchievements)
+            Toggle("Weekly consistency", isOn: $notifyConsistency)
+            Toggle("Notification sound", isOn: $notificationSound)
+        }
+        .toggleStyle(.switch)
+        .controlSize(.small)
+        .font(.callout)
+    }
 
     private var scopePicker: some View {
         Picker("Scope", selection: $scope) {
@@ -159,8 +257,12 @@ struct ContentView: View {
     private var totals: some View {
         let counts = store.totals(for: scope)
         return VStack(alignment: .leading, spacing: 6) {
-            statRow(symbol: "keyboard", label: "Keystrokes", value: counts.keystrokes)
-            statRow(symbol: "cursorarrow.click", label: "Clicks", value: counts.clicks)
+            if prioritiseCombinedCount {
+                statRow(symbol: "sum", label: "Combined events", value: counts.keystrokes + counts.clicks)
+            } else {
+                statRow(symbol: "keyboard", label: "Keystrokes", value: counts.keystrokes)
+                statRow(symbol: "cursorarrow.click", label: "Clicks", value: counts.clicks)
+            }
             // The record to beat — best previous period of this kind. Not shown
             // for Lifetime (no repeating period to compare against).
             if scope != .lifetime {
@@ -195,7 +297,7 @@ struct ContentView: View {
     }
 
     /// Row showing the combined-events record for a previous period, with an
-    /// info icon whose hover tooltip explains what the record is.
+    /// clickable info icon explaining which previous period set the record.
     private var recordRow: some View {
         let record = store.record(for: scope)
         return HStack {
@@ -209,14 +311,29 @@ struct ContentView: View {
             } else {
                 Text("—").foregroundStyle(.secondary)
             }
-            Image(systemName: "info.circle")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .help(recordTooltip(record))
+            Button {
+                showRecordDetails.toggle()
+            } label: {
+                Image(systemName: "info.circle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Explain record")
+            .popover(isPresented: $showRecordDetails) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Record to beat").font(.headline)
+                    Text(recordTooltip(record))
+                    Text("Records use keystrokes + clicks from previous calendar periods, for the Mac selection shown above.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                .padding(14)
+                .frame(width: 250)
+            }
         }
     }
 
-    /// Hover tooltip text describing the record (keystrokes + clicks combined).
+    /// Popup text describing the record (keystrokes + clicks combined).
     private func recordTooltip(_ record: (combined: Int, periodStart: Date)?) -> String {
         guard let record else {
             switch scope {
@@ -272,22 +389,6 @@ struct ContentView: View {
             Text(CountFormatter.grouped(value))
                 .monospacedDigit()
                 .bold()
-        }
-    }
-
-    private var liveSpeed: some View {
-        // TimelineView re-evaluates on a 2s cadence (no Combine needed), giving a
-        // live rolling readout as the ring buffer in the store ages out.
-        TimelineView(.periodic(from: .now, by: 2)) { _ in
-            HStack {
-                Image(systemName: "speedometer").frame(width: 20)
-                Text("Typing speed")
-                Spacer()
-                Text("\(store.keysPerMinute()) kpm · \(store.wordsPerMinute()) wpm")
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
-            }
-            .font(.callout)
         }
     }
 
@@ -506,6 +607,13 @@ struct ContentView: View {
 
     private var controls: some View {
         HStack {
+            Spacer()
+            Button("Quit") { NSApp.terminate(nil) }
+        }
+    }
+
+    private var settingsControls: some View {
+        HStack {
             Toggle("Launch at login", isOn: $launchAtLogin)
                 .toggleStyle(.checkbox)
                 .font(.caption)
@@ -520,7 +628,6 @@ struct ContentView: View {
                 }
             Spacer()
             Button("Reset") { showResetConfirm = true }
-            Button("Quit") { NSApp.terminate(nil) }
         }
         .confirmationDialog("Reset all-time totals on this Mac?",
                             isPresented: $showResetConfirm,

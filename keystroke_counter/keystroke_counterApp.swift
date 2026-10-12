@@ -18,7 +18,7 @@ struct keystroke_counterApp: App {
 
     var body: some Scene {
         MenuBarExtra {
-            ContentView(store: appDelegate.store, monitor: appDelegate.monitor, sync: appDelegate.sync)
+            ContentView(store: appDelegate.store, monitor: appDelegate.monitor, sync: appDelegate.sync, game: appDelegate.game)
         } label: {
             MenuBarLabel(store: appDelegate.store)
         }
@@ -32,11 +32,21 @@ struct keystroke_counterApp: App {
 /// NOTE on rendering constraints: `MenuBarExtra` renders its label into the
 /// system status bar, which restricts custom views. A single `Text` renders
 /// reliably there, so we compose both abbreviated counts into one string
-/// separated by a pipe (e.g. `703 | 77`). Values use `CountFormatter.abbreviated`.
+/// separated by a pipe (e.g. `703 | 77`), with an optional inline keyboard
+/// symbol. Values use `CountFormatter.abbreviated`.
 struct MenuBarLabel: View {
     let store: StatsStore
+    @AppStorage("showMenuBarIcon") private var showMenuBarIcon = true
+    @AppStorage("prioritiseCombinedCount") private var prioritiseCombinedCount = false
 
     var body: some View {
-        Text("\(CountFormatter.abbreviated(store.today.keystrokes)) | \(CountFormatter.abbreviated(store.today.clicks))")
+        let today = store.today
+        let counts = prioritiseCombinedCount
+            ? CountFormatter.abbreviated(today.keystrokes + today.clicks)
+            : "\(CountFormatter.abbreviated(today.keystrokes)) | \(CountFormatter.abbreviated(today.clicks))"
+        let label = showMenuBarIcon
+            ? Text("\(Image(systemName: "keyboard")) \(counts)")
+            : Text(counts)
+        label.accessibilityLabel("Today: \(store.today.keystrokes) keystrokes, \(store.today.clicks) clicks")
     }
 }

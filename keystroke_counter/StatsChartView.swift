@@ -21,12 +21,14 @@ enum ChartRange: Int, CaseIterable, Identifiable {
 struct StatsChartView: View {
     let store: StatsStore
     @State private var range: ChartRange = .week
+    @AppStorage("prioritiseCombinedCount") private var prioritiseCombinedCount = false
 
     /// Flattened (day, metric, value) rows for a grouped/stacked bar chart.
     private struct Point: Identifiable {
         let day: Date
         let metric: String
         let value: Int
+        let goalReached: Bool
 
         var id: String {
             "\(day.timeIntervalSinceReferenceDate)-\(metric)"
@@ -35,9 +37,14 @@ struct StatsChartView: View {
 
     private var points: [Point] {
         store.series(days: range.rawValue).flatMap { d in
-            [
-                Point(day: d.day, metric: "Keystrokes", value: d.keystrokes),
-                Point(day: d.day, metric: "Clicks", value: d.clicks),
+            let combined = d.keystrokes + d.clicks
+            let reached = store.dailyGoal > 0 && combined >= store.dailyGoal
+            if prioritiseCombinedCount {
+                return [Point(day: d.day, metric: "Combined events", value: combined, goalReached: reached)]
+            }
+            return [
+                Point(day: d.day, metric: "Keystrokes", value: d.keystrokes, goalReached: reached),
+                Point(day: d.day, metric: "Clicks", value: d.clicks, goalReached: reached),
             ]
         }
     }
@@ -62,14 +69,12 @@ struct StatsChartView: View {
                     x: .value("Day", point.day, unit: .day),
                     y: .value("Count", point.value)
                 )
-                .foregroundStyle(by: .value("Metric", point.metric))
+                .foregroundStyle(point.goalReached ? Color.green : (point.metric == "Clicks" ? Color.orange : Color.accentColor))
                 .position(by: .value("Metric", point.metric))
+                .accessibilityLabel("\(point.day.formatted(date: .abbreviated, time: .omitted)), \(point.metric)\(point.goalReached ? ", daily goal reached" : "")")
+                .accessibilityValue("\(point.value)")
             }
-            .chartForegroundStyleScale([
-                "Keystrokes": Color.accentColor,
-                "Clicks": Color.orange,
-            ])
-            .chartLegend(position: .bottom, spacing: 4)
+            .chartLegend(.hidden)
             .chartXAxis {
                 AxisMarks(values: .stride(by: .day, count: range == .week ? 1 : 5)) { _ in
                     AxisGridLine()
@@ -77,6 +82,24 @@ struct StatsChartView: View {
                 }
             }
             .frame(height: 140)
+
+            HStack(spacing: 12) {
+                legendItem(prioritiseCombinedCount ? "Combined events" : "Keystrokes", color: .accentColor)
+                if !prioritiseCombinedCount {
+                    legendItem("Clicks", color: .orange)
+                }
+            }
+            if store.dailyGoal > 0 {
+                legendItem("Daily goal reached (\(CountFormatter.grouped(store.dailyGoal)))", color: .green)
+            }
         }
+    }
+
+    private func legendItem(_ title: String, color: Color) -> some View {
+        HStack(spacing: 4) {
+            Circle().fill(color).frame(width: 7, height: 7)
+            Text(title).foregroundStyle(.secondary)
+        }
+        .font(.caption2)
     }
 }

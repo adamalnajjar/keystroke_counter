@@ -15,6 +15,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Single source of truth for statistics. Injected into the UI.
     let store = StatsStore()
+    let game = GameProgress()
 
     /// Raw event source that feeds `store`.
     lazy var monitor = EventMonitor(store: store)
@@ -38,6 +39,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         sync.start()
+        game.check(store: store, notify: false)
         monitor.start()
     }
 
@@ -45,6 +47,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         monitor.stop()
         // Write any debounced-but-unsaved counts before we exit.
         store.flush()
+        game.flush()
     }
 
     /// Fire any newly-crossed milestone notifications and the daily-goal alert.
@@ -60,5 +63,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             store.markDailyGoalNotified()
             NotificationManager.shared.fireDailyGoal(store.dailyGoal)
         }
+        game.check(store: store)
     }
 }

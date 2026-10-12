@@ -179,20 +179,6 @@ final class StatsStore {
     /// changes made while offline (or just before quitting) still get uploaded.
     @ObservationIgnored private var unsyncedDays: Set<Date>
 
-    // MARK: Live typing speed (rolling window)
-
-    /// Date-stamped ring buffer of recent keystroke timestamps used to compute a
-    /// live keys-per-minute figure over the last `speedWindow` seconds. This is
-    /// in-memory only (not persisted) — it is a live gauge, not history.
-    ///
-    /// `@ObservationIgnored` is essential: the UI reads this (via `keysPerMinute()`)
-    /// inside a `TimelineView` body, and it is mutated as events arrive. If it were
-    /// observed, that read/mutate pair would invalidate the body that depends on it
-    /// and spin an infinite render loop, freezing the app. The `TimelineView`'s own
-    /// timer drives the live refresh, so observation here is neither needed nor safe.
-    @ObservationIgnored private var recentKeystrokes: [Date] = []
-    private let speedWindow: TimeInterval = 60
-
     // MARK: Persistence
 
     private let fileURL: URL
@@ -317,12 +303,6 @@ final class StatsStore {
     func recordKeystroke(keyName: String, appName: String?) {
         keystrokeCount += 1
 
-        // Append now and prune anything older than the speed window so the buffer
-        // stays bounded. Pruning happens here (on write), never during the UI read.
-        let cutoff = Date().addingTimeInterval(-speedWindow)
-        recentKeystrokes.removeAll { $0 < cutoff }
-        recentKeystrokes.append(Date())
-
         mutateToday { today in
             today.keystrokes += 1
             today.keyFrequency[keyName, default: 0] += 1
@@ -355,7 +335,6 @@ final class StatsStore {
         // Other Macs' lifetime counts aren't reset, so milestones they already
         // carry the combined total past shouldn't all fire again at once.
         markMilestonesReachedSilently()
-        recentKeystrokes = []
         displayRevision &+= 1
         persist()
     }
@@ -562,26 +541,6 @@ final class StatsStore {
         }
     }
 
-    /// Live keystrokes-per-minute over the trailing `speedWindow`. Pure read: it
-    /// counts (without mutating) the timestamps still inside the window, so it is
-    /// safe to call from a SwiftUI view body. The buffer is pruned on write in
-    /// `recordKeystroke`.
-    func keysPerMinute() -> Int {
-        _ = displayRevision
-        let cutoff = Date().addingTimeInterval(-speedWindow)
-        let countInWindow = recentKeystrokes.reduce(into: 0) { total, date in
-            if date >= cutoff { total += 1 }
-        }
-        // Scale the count in the window up to a per-minute rate.
-        let perSecond = Double(countInWindow) / speedWindow
-        return Int((perSecond * 60).rounded())
-    }
-
-    /// Rough words-per-minute (chars-per-minute / 5, the standard convention).
-    func wordsPerMinute() -> Int {
-        keysPerMinute() / 5
-    }
-
     // MARK: Milestones
 
     /// Combined all-time events (keystrokes + clicks) across all synced Macs.
@@ -610,6 +569,18 @@ final class StatsStore {
 
         if !fired.isEmpty { persist() }
         return fired
+    }
+
+    /// Celebrations always use all active synced Macs, independent of display preferences.
+    func gameSummary(now: Date = Date(), includeHistoricalDates: Bool = false) -> GameSummary {
+        _ = displayRevision
+        let remote = isSyncActive ? remoteDays : [:]
+        let dates = Set(days.keys).union(remote.keys)
+        let merged = dates.map { Self.merged(days[$0], remote[$0], day: $0) }
+        return GameSummary.calculate(days: merged, lifetime: combinedTotal, goal: dailyGoal, now: now,
+            keystrokes: keystrokeCount + (isSyncActive ? remoteKeystrokes : 0),
+            clicks: clickCount + (isSyncActive ? remoteClicks : 0),
+            includeHistoricalDates: includeHistoricalDates)
     }
 
     // MARK: Daily goal
